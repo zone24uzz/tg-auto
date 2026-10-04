@@ -194,6 +194,28 @@ docker compose logs -f app
 * Health: `GET /healthz` (liveness), `GET /readyz` (database).
 * Back up the `pgdata` volume **and** `DATA_ENCRYPTION_KEY` (without the key, stored content is unreadable).
 
+### Render (free tier) — step by step
+1. **Database (Neon, free, no expiry):** create a project at neon.tech (region: Europe/Frankfurt) and copy the
+   **direct** connection string (host without `-pooler`, ends with `?sslmode=require`). Render's own free
+   PostgreSQL is deleted after 30 days, so it is not used.
+2. **Code on GitHub:** push this repository to a private GitHub repo.
+3. **Secrets file:** `npx tsx scripts/make-render-env.ts "<neon connection string>"` writes `data/render.env`
+   (git-ignored) with the secret variables copied from your `.env`.
+4. **Render:** New → **Blueprint** → pick the repo (it reads `render.yaml`: Docker, free plan, Frankfurt,
+   `/healthz`). Environment → **Add from .env** → paste `data/render.env` → deploy. Delete `data/render.env`.
+   The container applies migrations on start; `TELEGRAM_WEBHOOK_URL` defaults to Render's public URL.
+5. **Stop the local bot** before the Render instance starts — two running copies would both answer your
+   contacts (and fight over the bot's webhook/polling).
+6. **Log in:** open `https://<service>.onrender.com/healthz` (should say `ok`), then send `/login` to the bot
+   in Telegram and scan the QR code (Settings → Devices → Link Desktop Device).
+7. **Keep it awake:** at cron-job.org (free) create a job `GET https://<service>.onrender.com/healthz` every
+   10 minutes. A sleeping free instance cannot hold the userbot connection. For no sleep at all use the
+   Starter plan instead.
+8. If MTProto cannot connect on the host, set `MTPROTO_PORT=80` (and/or `MTPROTO_OBFUSCATED=false`) in Render.
+
+Free-tier limits: 512 MB RAM (fine for text, photos and voice; long videos are heavy), 750 instance hours
+per month (one always-on service), logs in the Render dashboard.
+
 ### Platform-as-a-service
 Any Node host with PostgreSQL works: build with `npm ci && npm run build`, run
 `npx prisma migrate deploy` on release, start `node dist/main.js` (and optionally `node dist/worker.js`).
