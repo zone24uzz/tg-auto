@@ -1,0 +1,278 @@
+import type { Composer, Context } from 'grammy';
+import { Api } from 'telegram';
+import type { UserbotRuntime, UserbotRuntimeDeps, UserbotStatus } from '../../app/userbot-contract.js';
+import { childLogger } from '../../logging/logger.js';
+import { describeError, registerSecrets } from '../../logging/sanitize.js';
+import type { NormalizedSender } from '../../messages/types.js';
+import { escapeHtml } from '../common/html.js';
+import { closeClient, createMtprotoClient, isAuthLostError, type ClientBundle } from './client.js';
+import { MtprotoDownloader } from './downloader.js';
+import { registerEventHandlers } from './events.js';
+import { LoginController, accountLabel, createLoginComposer, type LoginHost } from './login.js';
+import { toBigIntId } from './normalizer.js';
+import { PeerResolver } from './peers.js';
+import { SessionStore, type SessionSource } from './session-store.js';
+import { MtprotoTransport } from './transport.js';
+
+export { MTPROTO_FILE_PREFIX } from '../../app/userbot-contract.js';
+
+const log = childLogger('userbot');
+
+const LOGIN_REQUIRED_TEXT = '🔐 Userbot ulanmagan. Ulash uchun botga /login yuboring.';
+const HEALTH_CHECK_MS = 10 * 60_000;
+const RETRY_BASE_MS = 30_000;
+const RETRY_MAX_MS = 5 * 60_000;
+
+export function createUserbotRuntime(deps: UserbotRuntimeDeps): UserbotRuntime {
+  return new UserbotRuntimeImpl(deps);
+}
+
+/** Owns the MTProto client: session restore, QR login, event wiring, health checks and shutdown. */
+class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
+  readonly composer: Composer<Context>;
+  readonly downloader: MtprotoDownloader;
+  readonly transport: MtprotoTransport;
+  readonly apiId: number;
+  readonly apiHash: string;
+  readonly adminTelegramUserId: bigint;
+
+  private state: UserbotStatus = { state: 'disconnected' };
+  private bundle: ClientBundle | null = null;
+  private source: SessionSource | 'login' | null = null;
+  private unregister: (() => void) | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retries = 0;
+  private starting = false;
+  private stopped = false;
+  private readonly store: SessionStore;
+  private readonly login: LoginController<ClientBundle>;
+
+  constructor(private readonly deps: UserbotRuntimeDeps) {
+    registerSecrets([deps.apiHash, deps.envSession]);
+    this.apiId = deps.apiId;
+    this.apiHash = deps.apiHash;
+    this.adminTelegramUserId = deps.adminTelegramUserId;
+    this.store = new SessionStore(deps.db, deps.cipher, deps.envSession);
+    const peers = new PeerResolver(async (userId) => {
+      const row = await deps.db.telegramUser.findUnique({ where: { telegramUserId: userId }, select: { accessHash: true } });
+      return row?.accessHash ?? null;
+    });
+    const getClient = () => (this.state.state === 'ready' ? (this.bundle?.client ?? null) : null);
+    this.transport = new MtprotoTransport({ getClient, peers, onAuthLost: (error) => void this.authLost(error) });
+    this.downloader = new MtprotoDownloader(getClient, peers, deps.tmpDir);
+    this.login = new LoginController<ClientBundle>(this);
+    this.composer = createLoginComposer(this, this.login);
+  }
+
+  status(): UserbotStatus {
+    return this.state;
+  }
+
+  async start(): Promise<void> {
+    if (this.starting || this.state.state === 'ready' || this.login.inProgress) return;
+    this.starting = true;
+    this.stopped = false;
+    this.clearRetry();
+    this.state = { state: 'connecting' };
+    try {
+      const { sessions, dbUnreadable } = await this.store.candidates();
+      if (dbUnreadable) await this.deps.events.warn('userbot', 'stored session cannot be decrypted (DATA_ENCRYPTION_KEY changed?)');
+      let connectError: unknown = null;
+      for (const candidate of sessions) {
+        if (this.stopped) return;
+        const bundle = createMtprotoClient(candidate.session, this.apiId, this.apiHash, this.deps.mtproto);
+        try {
+          await bundle.client.connect();
+          if (!(await bundle.client.checkAuthorization())) {
+            await closeClient(bundle.client);
+            await this.deps.events.warn('userbot', `${candidate.source} session is not authorized`);
+            if (candidate.source === 'env') await this.deps.notifier.text('⚠️ .env dagi TELEGRAM_SESSION yaroqsiz (akkauntdan chiqarilgan).');
+            continue;
+          }
+          const me = await bundle.client.getMe();
+          if (this.stopped) {
+            await closeClient(bundle.client);
+            return;
+          }
+          await this.activate(bundle, me, candidate.source);
+          this.retries = 0;
+          return;
+        } catch (error) {
+          connectError = error;
+          await closeClient(bundle.client);
+          await this.deps.events.error('userbot', `connect failed (${candidate.source} session): ${describeError(error)}`);
+        }
+      }
+      if (connectError !== null) {
+        this.state = { state: 'error', message: describeError(connectError, 200) };
+        if (this.retries === 0)
+          await this.deps.notifier.text(`⚠️ Userbot Telegramga ulana olmadi: ${escapeHtml(describeError(connectError, 200))}. Qayta urinib ko‘riladi.`);
+        this.scheduleRetry();
+        return;
+      }
+      this.state = { state: 'login_required' };
+      await this.deps.notifier.text(LOGIN_REQUIRED_TEXT);
+    } catch (error) {
+      this.state = { state: 'error', message: describeError(error, 200) };
+      log.error({ error: describeError(error) }, 'userbot start failed');
+      await this.deps.events.error('userbot', `start failed: ${describeError(error)}`);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.clearRetry();
+    this.login.cancel('shutdown');
+    const bundle = this.detach();
+    if (bundle) await closeClient(bundle.client);
+    this.state = { state: 'disconnected' };
+  }
+
+  // ── LoginHost ──────────────────────────────────────────────────────────
+
+  newLoginClient(): ClientBundle {
+    return createMtprotoClient('', this.apiId, this.apiHash, this.deps.mtproto);
+  }
+
+  async adopt(bundle: ClientBundle, me: Api.User): Promise<{ sessionSaved: boolean }> {
+    const meId = toBigIntId(me.id);
+    if (meId === undefined) throw new Error('Telegram returned an account without id');
+    let sessionSaved = false;
+    try {
+      sessionSaved = await this.store.save(bundle.session.save(), meId);
+    } catch (error) {
+      await this.deps.events.error('userbot', `could not store the session: ${describeError(error)}`);
+    }
+    await this.activate(bundle, me, 'login');
+    return { sessionSaved };
+  }
+
+  async discard(bundle: ClientBundle): Promise<void> {
+    await closeClient(bundle.client);
+  }
+
+  loginFailed(): void {
+    if (this.state.state !== 'ready' && this.state.state !== 'connecting') this.state = { state: 'login_required' };
+  }
+
+  async logout(): Promise<void> {
+    const bundle = this.detach();
+    if (bundle) {
+      try {
+        await bundle.client.invoke(new Api.auth.LogOut());
+      } catch (error) {
+        log.warn({ error: describeError(error) }, 'auth.LogOut failed');
+      }
+      await closeClient(bundle.client);
+    }
+    await this.store.clear();
+    this.state = { state: 'login_required' };
+    this.deps.onLoggedOut();
+    await this.deps.events.info('userbot', 'logged out by the owner');
+    if (this.deps.envSession && this.source !== 'env')
+      await this.deps.notifier.text('ℹ️ .env faylida TELEGRAM_SESSION bor — qayta ishga tushirilganda u ishlatiladi. Kerak bo‘lmasa, uni .env dan o‘chiring.');
+    this.source = null;
+  }
+
+  // ── internals ──────────────────────────────────────────────────────────
+
+  private async activate(bundle: ClientBundle, me: Api.User, source: SessionSource | 'login'): Promise<void> {
+    const meId = toBigIntId(me.id);
+    if (meId === undefined) throw new Error('Telegram returned an account without id');
+    this.clearRetry();
+    const previous = this.detach();
+    if (previous && previous !== bundle) await closeClient(previous.client);
+
+    const owner: NormalizedSender = {
+      telegramUserId: meId,
+      username: me.username,
+      firstName: me.firstName,
+      lastName: me.lastName,
+      isBot: false,
+    };
+    await this.deps.connections.ensureUserbotConnection(meId);
+    this.bundle = bundle;
+    this.source = source;
+    this.unregister = registerEventHandlers({
+      client: bundle.client,
+      connectionId: `userbot:${meId}`,
+      owner: { id: meId, sender: owner },
+      business: this.deps.business,
+      transport: this.transport,
+    });
+    this.state = { state: 'ready', userId: meId, username: me.username };
+    this.deps.onReady(this.transport);
+    this.startHealthCheck();
+    log.info({ source }, 'userbot connected');
+    await this.deps.events.info('userbot', `connected as account ${meId} (${source} session)`);
+    // The login flow tells the owner itself; on startup the admin is warned here.
+    if (source !== 'login' && meId !== this.adminTelegramUserId)
+      await this.deps.notifier.text(
+        `⚠️ Userbot ${escapeHtml(accountLabel(me))} (id ${meId}) akkauntiga ulandi, lekin ADMIN_TELEGRAM_USER_ID = ${this.adminTelegramUserId}. ` +
+          'Xabarlar e’tiborsiz qoldiriladi, toki ADMIN_TELEGRAM_USER_ID shu akkauntga mos kelmaguncha.',
+      );
+  }
+
+  /** Unsubscribes handlers and detaches the client (returned so the caller can close it). */
+  private detach(): ClientBundle | null {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = undefined;
+    try {
+      this.unregister?.();
+    } catch (error) {
+      log.debug({ error: describeError(error) }, 'could not remove event handlers');
+    }
+    this.unregister = null;
+    const bundle = this.bundle;
+    this.bundle = null;
+    return bundle;
+  }
+
+  private startHealthCheck(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => void this.healthCheck(), HEALTH_CHECK_MS);
+    this.healthTimer.unref?.();
+  }
+
+  /** Detects sessions terminated from another device (Settings → Devices) or revoked by Telegram. */
+  private async healthCheck(): Promise<void> {
+    const client = this.bundle?.client;
+    if (!client || this.state.state !== 'ready') return;
+    try {
+      await client.invoke(new Api.updates.GetState());
+    } catch (error) {
+      if (isAuthLostError(error)) await this.authLost(error);
+      else log.debug({ error: describeError(error) }, 'userbot health check failed (transient)');
+    }
+  }
+
+  private async authLost(error: unknown): Promise<void> {
+    if (this.state.state !== 'ready') return;
+    const bundle = this.detach();
+    this.state = { state: 'login_required' };
+    this.deps.onLoggedOut();
+    if (bundle) await closeClient(bundle.client);
+    if (this.source === 'db' || this.source === 'login') await this.store.clear().catch(() => undefined);
+    this.source = null;
+    const reason = describeError(error, 200);
+    log.warn({ error: reason }, 'userbot session is no longer valid');
+    await this.deps.events.warn('userbot', `session lost: ${reason}`);
+    await this.deps.notifier.text(`🔐 Userbot sessiyasi bekor qilindi (${escapeHtml(reason)}). Qayta ulash uchun botga /login yuboring.`);
+  }
+
+  private scheduleRetry(): void {
+    if (this.stopped) return;
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** this.retries);
+    this.retries++;
+    this.retryTimer = setTimeout(() => void this.start(), delay);
+    this.retryTimer.unref?.();
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+}

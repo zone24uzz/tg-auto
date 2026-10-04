@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: autoresponder
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: autoresponder
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoresponder -d autoresponder"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Not published to the host: only the app containers can reach the database.
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://autoresponder:${POSTGRES_PASSWORD}@postgres:5432/autoresponder
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://autoresponder:${POSTGRES_PASSWORD}@postgres:5432/autoresponder
+      # The container always listens on 8080 (a PORT value in .env is for local runs only).
+      PORT: "8080"
+      # The one-shot `migrate` service already applied migrations.
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+      # Health endpoints (/healthz, /readyz) and webhooks listen on 8080. By default the port is only
+      # published on the host's loopback interface, so it is not reachable from the internet.
+      # Webhook mode: keep this binding and put a TLS reverse proxy on the same host in front of it
+      # (e.g. Caddy/nginx: https://bot.example.com/telegram/* -> http://127.0.0.1:${PORT:-8080}),
+      # or attach the proxy container to this compose network and drop the `ports` entry entirely.
+      # Only if you really need direct exposure, change it to "${PORT:-8080}:8080".
+      - "127.0.0.1:${PORT:-8080}:8080"
+    volumes:
+      - appdata:/app/data
+
+  # Optional: run heavy media jobs in a separate container (set WORKER_MODE=separate for `app`).
+  worker:
+    profiles: ["separate-worker"]
+    build:
+      context: .
+      target: runtime
+    command: ["node", "dist/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://autoresponder:${POSTGRES_PASSWORD}@postgres:5432/autoresponder
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    volumes:
+      - appdata:/app/data
+
+volumes:
+  pgdata:
+  appdata:

@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-check
+coverage
+data
+.pg-local
+.env
+.env.*
+!.env.example
+*.log
+tests
+src/generated

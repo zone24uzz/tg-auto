@@ -1,0 +1,65 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Free web service in Docker (ffmpeg included). The container applies DB migrations on start.
+# Keep it awake with an external pinger (cron-job.org / UptimeRobot) hitting /healthz every 10 minutes:
+# the userbot (MTProto) connection only lives while the service is running.
+services:
+  - type: web
+    name: tg-ai-autoresponder
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: TIMEZONE
+        value: Asia/Tashkent
+      - key: TELEGRAM_TRANSPORT
+        value: userbot
+      # Webhook for the admin bot: Telegram's POST also wakes a sleeping free instance.
+      # TELEGRAM_WEBHOOK_URL defaults to RENDER_EXTERNAL_URL (set by Render automatically).
+      - key: TELEGRAM_UPDATE_MODE
+        value: webhook
+      - key: WORKER_MODE
+        value: embedded
+      - key: WORKER_CONCURRENCY_TEXT
+        value: "2"
+      - key: WORKER_CONCURRENCY_MEDIA
+        value: "1"
+      # 443 works on most networks; switch to 80 / MTPROTO_OBFUSCATED=false only if the host has trouble.
+      - key: MTPROTO_PORT
+        value: "443"
+      - key: MTPROTO_OBFUSCATED
+        value: "true"
+      - key: DEFAULT_AI_PROVIDER
+        value: gemini
+      - key: DEFAULT_AI_MODEL
+        value: gemini-3.8-flash
+      - key: FALLBACK_AI_PROVIDER
+        value: gemini
+      - key: FALLBACK_AI_MODEL
+        value: gemini-3.5-flash
+      # ── secrets: set in the Render dashboard (Environment → Add from .env) ──
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: ADMIN_TELEGRAM_USER_ID
+        sync: false
+      - key: OWNER_DISPLAY_NAME
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATA_ENCRYPTION_KEY
+        sync: false

@@ -1,0 +1,61 @@
+{
+  "name": "telegram-ai-autoresponder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram Business AI auto-responder with an owner-only admin bot",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "start:worker": "node dist/worker.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:local": "tsx scripts/local-db.ts",
+    "whoami": "tsx scripts/whoami.ts",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "aws4fetch": "^1.0.20",
+    "exceljs": "^4.4.0",
+    "grammy": "^1.46.0",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "prisma": "7.10.0",
+    "qrcode": "^1.5.4",
+    "telegram": "^2.26.22",
+    "unpdf": "^1.8.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.19.0",
+    "@types/qrcode": "^1.5.6",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "eslint": "^10.12.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^5.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "prisma@7.10.0": true,
+    "@prisma/engines@7.10.0": true,
+    "@embedded-postgres/windows-x64@18.4.0-beta.17": true
+  }
+}

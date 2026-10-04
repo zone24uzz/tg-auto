@@ -1,0 +1,542 @@
+// Telegram AI Auto-Responder: PostgreSQL schema.
+// Message content columns may hold "enc:v1:..." ciphertext when DATA_ENCRYPTION_KEY is set.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  runtime             = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── enums ─────────────────────────────
+
+enum AdminRole {
+  OWNER
+}
+
+enum UserMode {
+  AUTO
+  MANUAL
+  IGNORE
+  VIP
+  BLOCK
+}
+
+enum RuleMatchType {
+  USER_ID
+  USERNAME
+  CHAT_ID
+  TAG
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING_OWNER
+  OUTGOING_BOT
+}
+
+enum MessageType {
+  TEXT
+  PHOTO
+  VOICE
+  AUDIO
+  VIDEO
+  VIDEO_NOTE
+  DOCUMENT
+  STICKER
+  ANIMATION
+  CONTACT
+  LOCATION
+  POLL
+  OTHER
+}
+
+enum MessageStatus {
+  RECEIVED
+  QUEUED
+  PROCESSING
+  ANSWERED
+  OWNER_ATTENTION
+  MANUAL
+  IGNORED
+  SKIPPED
+  RATE_LIMITED
+  FAILED
+}
+
+enum Classification {
+  NORMAL
+  PERSONAL
+  SENSITIVE
+  REQUIRES_OWNER
+  BUSINESS
+  SPAM
+  UNKNOWN
+}
+
+enum MediaKind {
+  PHOTO
+  VOICE
+  AUDIO
+  VIDEO
+  VIDEO_NOTE
+  DOCUMENT
+  STICKER
+  ANIMATION
+}
+
+enum MediaStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+  SKIPPED
+  TOO_LARGE
+  UNSUPPORTED
+  DISABLED
+}
+
+enum ResponseKind {
+  AUTO_REPLY
+  PERSONAL_NOTICE
+  FALLBACK
+  OWNER_APPROVED_AI
+  OWNER_MANUAL
+  LIMIT_NOTICE
+  MEDIA_NOTICE
+}
+
+enum ResponseStatus {
+  PENDING
+  SENT
+  FAILED
+  UNCERTAIN
+}
+
+enum AttentionStatus {
+  PENDING
+  REPLIED
+  AI_REPLIED
+  IGNORED
+  RESOLVED_BY_OWNER
+}
+
+enum AuditAction {
+  AUTO_REPLY_ENABLED
+  AUTO_REPLY_DISABLED
+  AUTO_REPLY_PAUSED
+  MODEL_CHANGED
+  PROVIDER_CHANGED
+  REASONING_CHANGED
+  PROMPT_CHANGED
+  PROMPT_RESTORED
+  PROMPT_RESET
+  USER_RULE_CHANGED
+  USER_BLOCKED
+  USER_UNBLOCKED
+  SETTING_CHANGED
+  OWNER_ATTENTION_RESOLVED
+  DATA_DELETED
+  CONNECTION_CHANGED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  DEAD
+}
+
+enum EventLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+// ───────────────────────────── admin / connection ─────────────────────────────
+
+model Admin {
+  id             Int       @id @default(autoincrement())
+  telegramUserId BigInt    @unique
+  role           AdminRole @default(OWNER)
+  createdAt      DateTime  @default(now())
+
+  @@map("admins")
+}
+
+/// Pending multi-step input of the admin (e.g. "send the new prompt").
+model AdminState {
+  telegramUserId BigInt   @id
+  state          String
+  payload        Json?
+  expiresAt      DateTime
+  updatedAt      DateTime @updatedAt
+
+  @@map("admin_states")
+}
+
+/// Encrypted MTProto StringSession of the owner's account (userbot transport).
+model UserbotSession {
+  id          String   @id @default("default")
+  session     String // ContentCipher ciphertext — full account access, never log it
+  ownerUserId BigInt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("userbot_sessions")
+}
+
+/// Telegram Business connection (business_connection update).
+model TelegramConnection {
+  id          String   @id // business_connection_id
+  ownerUserId BigInt
+  userChatId  BigInt
+  isEnabled   Boolean  @default(true)
+  canReply    Boolean  @default(false)
+  authorized  Boolean  @default(false) // owner == ADMIN_TELEGRAM_USER_ID
+  rights      Json?
+  connectedAt DateTime
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  chats Chat[]
+
+  @@map("telegram_connections")
+}
+
+// ───────────────────────────── people / chats ─────────────────────────────
+
+model TelegramUser {
+  id             Int       @id @default(autoincrement())
+  telegramUserId BigInt    @unique
+  username       String?
+  firstName      String?
+  lastName       String?
+  languageCode   String?
+  isBot          Boolean   @default(false)
+  /// MTProto access_hash (userbot mode) so replies work after restarts without an entity cache.
+  accessHash     String?
+  isContact      Boolean   @default(false)
+  tags           String[]  @default([])
+  notes          String?
+  messageCount   Int       @default(0)
+  firstSeenAt    DateTime  @default(now())
+  lastMessageAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  messages Message[]
+  chats    Chat[]
+
+  @@index([username])
+  @@index([lastMessageAt])
+  @@map("users")
+}
+
+model Chat {
+  id                 Int       @id @default(autoincrement())
+  connectionId       String
+  telegramChatId     BigInt
+  type               String    @default("private")
+  title              String?
+  userId             Int?
+  firstSeenAt        DateTime  @default(now())
+  lastMessageAt      DateTime?
+  lastOwnerMessageAt DateTime?
+  /// Per-chat processing lease so only one worker answers a chat at a time.
+  processingUntil    DateTime?
+  /// Owner token of the current lease (only the holder may renew/release it).
+  processingToken    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  connection TelegramConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  user       TelegramUser?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages   Message[]
+  summary    ConversationSummary?
+  attention  OwnerAttention[]
+  responses  AiResponse[]
+
+  @@unique([connectionId, telegramChatId])
+  @@index([telegramChatId])
+  @@map("chats")
+}
+
+// ───────────────────────────── messages ─────────────────────────────
+
+model Message {
+  id                       Int              @id @default(autoincrement())
+  chatId                   Int
+  senderId                 Int?
+  telegramMessageId        Int
+  direction                MessageDirection @default(INCOMING)
+  type                     MessageType
+  currentText              String?
+  currentCaption           String?
+  replyToTelegramMessageId Int?
+  forwardInfo              Json?
+  mediaGroupId             String?
+  status                   MessageStatus    @default(RECEIVED)
+  statusReason             String?
+  classification           Classification?
+  classificationConfidence Float?
+  classificationReason     String?
+  injectionSuspected       Boolean          @default(false)
+  versionCount             Int              @default(1)
+  telegramDate             DateTime
+  editedAt                 DateTime?
+  deletedAt                DateTime?
+  processedAt              DateTime?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  chat      Chat             @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender    TelegramUser?    @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  versions  MessageVersion[]
+  media     Media[]
+  responses AiResponse[]
+  attention OwnerAttention?
+
+  @@unique([chatId, telegramMessageId])
+  @@index([chatId, telegramDate])
+  @@index([senderId, createdAt])
+  @@index([createdAt])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("messages")
+}
+
+model MessageVersion {
+  id        Int       @id @default(autoincrement())
+  messageId Int
+  version   Int
+  text      String?
+  caption   String?
+  editedAt  DateTime? // Telegram edit_date; null for the original
+  createdAt DateTime  @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, version])
+  @@map("message_versions")
+}
+
+model Media {
+  id                   Int         @id @default(autoincrement())
+  messageId            Int
+  kind                 MediaKind
+  telegramFileId       String
+  telegramFileUniqueId String
+  mimeType             String?
+  fileName             String?
+  fileSize             Int?
+  durationSec          Int?
+  width                Int?
+  height               Int?
+  emoji                String?
+  status               MediaStatus @default(PENDING)
+  extractedText        String? // transcript / document text (possibly encrypted)
+  description          String? // vision summary (possibly encrypted)
+  storageKey           String? // only when raw media retention is enabled
+  error                String?
+  expiresAt            DateTime?
+  deletedAt            DateTime?
+  processedAt          DateTime?
+  createdAt            DateTime    @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([expiresAt])
+  @@map("media")
+}
+
+// ───────────────────────────── AI ─────────────────────────────
+
+model AiResponse {
+  id                    Int            @id @default(autoincrement())
+  sourceMessageId       Int
+  chatId                Int
+  kind                  ResponseKind
+  status                ResponseStatus @default(PENDING)
+  text                  String?
+  provider              String?
+  model                 String?
+  reasoningEffort       String?
+  inputTokens           Int            @default(0)
+  outputTokens          Int            @default(0)
+  costUsd               Decimal        @default(0) @db.Decimal(12, 6)
+  latencyMs             Int?
+  usedFallback          Boolean        @default(false)
+  sentTelegramMessageId Int?
+  error                 String?
+  createdAt             DateTime       @default(now())
+  sentAt                DateTime?
+
+  message Message @relation(fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceMessageId, kind])
+  @@index([chatId, createdAt])
+  @@index([createdAt])
+  @@map("ai_responses")
+}
+
+model ConversationSummary {
+  id                    Int      @id @default(autoincrement())
+  chatId                Int      @unique
+  summary               String
+  coveredUntilMessageId Int
+  messageCount          Int      @default(0)
+  updatedAt             DateTime @updatedAt
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("conversation_summaries")
+}
+
+model UsageStat {
+  id           Int      @id @default(autoincrement())
+  provider     String
+  model        String
+  operation    String // TEXT | CLASSIFY | VISION | TRANSCRIBE | VIDEO | SUMMARY | TTS
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  audioSeconds Int      @default(0)
+  imageCount   Int      @default(0)
+  costUsd      Decimal  @default(0) @db.Decimal(12, 6)
+  latencyMs    Int?
+  success      Boolean  @default(true)
+  messageId    Int?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([provider, model])
+  @@map("usage_stats")
+}
+
+// ───────────────────────────── rules / settings / prompts ─────────────────────────────
+
+model UserRule {
+  id         Int           @id @default(autoincrement())
+  matchType  RuleMatchType
+  matchValue String // normalized: numeric id as string, lowercase username without @, tag lowercase
+  mode       UserMode
+  note       String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@unique([matchType, matchValue])
+  @@index([mode])
+  @@map("user_rules")
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedBy BigInt?
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model Prompt {
+  id        Int      @id @default(autoincrement())
+  kind      String   @default("SYSTEM")
+  version   Int
+  content   String
+  isActive  Boolean  @default(false)
+  createdBy BigInt?
+  createdAt DateTime @default(now())
+
+  @@unique([kind, version])
+  @@index([kind, isActive])
+  @@map("prompts")
+}
+
+// ───────────────────────────── owner attention / audit ─────────────────────────────
+
+model OwnerAttention {
+  id                         Int             @id @default(autoincrement())
+  messageId                  Int             @unique
+  chatId                     Int
+  reason                     String
+  /// All incoming messages this item covers (the burst), so owner actions use exactly these.
+  burstMessageIds            Int[]           @default([])
+  detail                     String?
+  status                     AttentionStatus @default(PENDING)
+  adminNotificationMessageId Int?
+  createdAt                  DateTime        @default(now())
+  resolvedAt                 DateTime?
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([chatId, status])
+  @@map("owner_attention")
+}
+
+model AuditLog {
+  id                  Int         @id @default(autoincrement())
+  adminTelegramUserId BigInt
+  action              AuditAction
+  target              String?
+  metadata            Json?
+  createdAt           DateTime    @default(now())
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemEvent {
+  id        Int        @id @default(autoincrement())
+  level     EventLevel
+  source    String
+  message   String // sanitized, never contains secrets or message content
+  createdAt DateTime   @default(now())
+
+  @@index([createdAt])
+  @@map("system_events")
+}
+
+// ───────────────────────────── infrastructure ─────────────────────────────
+
+/// Telegram update idempotency (webhook retries / polling restarts).
+model ProcessedUpdate {
+  botKind    String
+  updateId   BigInt
+  receivedAt DateTime @default(now())
+
+  @@id([botKind, updateId])
+  @@index([receivedAt])
+  @@map("processed_updates")
+}
+
+/// Durable PostgreSQL job queue (FOR UPDATE SKIP LOCKED).
+model Job {
+  id          Int       @id @default(autoincrement())
+  queue       String // "text" | "media" | "maintenance"
+  type        String
+  payload     Json
+  status      JobStatus @default(QUEUED)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  runAt       DateTime  @default(now())
+  lockedAt    DateTime?
+  lockedBy    String?
+  lastError   String?
+  dedupeKey   String?   @unique
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finishedAt  DateTime?
+
+  @@index([queue, status, runAt])
+  @@map("jobs")
+}
