@@ -28,6 +28,20 @@ export function createDb(databaseUrl: string): Db {
   return new PrismaClient({ adapter });
 }
 
+/**
+ * Waits until the database answers (crash recovery after a power loss, a sleeping hosted DB…),
+ * retrying every few seconds. Returns false only after `timeoutMs`.
+ */
+export async function waitForDb(db: Db, timeoutMs = 120_000, intervalMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await pingDb(db)) return true;
+    if (Date.now() >= deadline) return false;
+    log.warn('database not ready yet; retrying');
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 /** Lightweight readiness probe. */
 export async function pingDb(db: Db): Promise<boolean> {
   try {

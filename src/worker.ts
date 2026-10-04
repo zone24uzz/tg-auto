@@ -1,7 +1,7 @@
 import { buildContainer } from './app/container.js';
 import { buildWorker, startScheduler } from './app/jobs.js';
 import { ConfigError, loadEnv } from './config/env.js';
-import { pingDb } from './database/client.js';
+import { waitForDb } from './database/client.js';
 import { logger } from './logging/logger.js';
 import { describeError } from './logging/sanitize.js';
 
@@ -9,7 +9,7 @@ import { describeError } from './logging/sanitize.js';
 async function main(): Promise<void> {
   const env = loadEnv();
   const c = buildContainer(env);
-  if (!(await pingDb(c.db))) throw new Error('Database is not reachable');
+  if (!(await waitForDb(c.db))) throw new Error('Database is not reachable');
   await c.mainBot.init();
 
   const worker = buildWorker(c);

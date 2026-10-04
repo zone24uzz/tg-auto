@@ -4,7 +4,7 @@ import type { UserbotRuntime } from './app/userbot-contract.js';
 import { buildContainer } from './app/container.js';
 import { buildWorker, startScheduler } from './app/jobs.js';
 import { ConfigError, loadEnv } from './config/env.js';
-import { pingDb } from './database/client.js';
+import { pingDb, waitForDb } from './database/client.js';
 import { logger } from './logging/logger.js';
 import { describeError } from './logging/sanitize.js';
 import { createAdminComposer } from './telegram/admin/index.js';
@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const env = loadEnv();
   const c = buildContainer(env);
 
-  if (!(await pingDb(c.db))) throw new Error('Database is not reachable (check DATABASE_URL and run migrations)');
+  if (!(await waitForDb(c.db))) throw new Error('Database is not reachable (check DATABASE_URL and run migrations)');
   await c.db.admin.upsert({
     where: { telegramUserId: env.ADMIN_TELEGRAM_USER_ID },
     create: { telegramUserId: env.ADMIN_TELEGRAM_USER_ID },
