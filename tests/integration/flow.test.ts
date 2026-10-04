@@ -247,6 +247,17 @@ d('message flow (real PostgreSQL)', () => {
     expect(JSON.stringify(call)).toContain('Web sayt narxi qancha?');
   });
 
+  it('messages that waited longer than 30 minutes (assistant offline) go to the owner, not to the AI', async () => {
+    const old = businessMessage({ text: 'Saytingiz qancha turadi?', date: Math.floor(Date.now() / 1000) - 2 * 3600 });
+    await h.business.onMessage(old);
+    await h.drain();
+    expect(h.sent).toHaveLength(0);
+    expect(h.ai.generateReply).not.toHaveBeenCalled();
+    const msg = await h.db.message.findFirstOrThrow({ where: { telegramMessageId: old.message_id } });
+    expect(msg.status).toBe('MANUAL');
+    expect((await h.db.ownerAttention.findFirstOrThrow()).reason).toBe('STALE');
+  });
+
   it('unauthorized business connections are ignored entirely', async () => {
     await h.connections.upsertFromUpdate({
       id: 'bc-evil',

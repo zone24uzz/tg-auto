@@ -47,6 +47,8 @@ export const BURST_LIMIT = 10;
 const AI_RETRY_WINDOW_MS = 10 * 60_000;
 const AI_RETRY_DELAY_MS = 60_000;
 const CHAT_BUSY_RETRY_MS = 3_000;
+/** Older messages are not auto-answered: they arrived while the assistant was offline (see handleBurst 1b). */
+export const STALE_MESSAGE_MS = 30 * 60_000;
 /** Low-priority owner items (rate limited / media disabled): at most one per chat per window. */
 const LOW_PRIORITY_WINDOW_MINUTES = 30;
 const OWNER_REPLIED = 'owner replied personally';
@@ -239,6 +241,24 @@ export class ReplyPipeline {
     }
     if (!chat.connection.canReply) {
       await this.setStatuses(burst, 'MANUAL', 'bot has no reply rights');
+      return;
+    }
+
+    // 1b. Messages that waited too long (the system was offline, asleep or disconnected) get no
+    //     strangely late AI answer; they go to the owner's queue instead (no waiting message).
+    if (Date.now() - last.telegramDate.getTime() > STALE_MESSAGE_MS) {
+      await this.setStatuses(burst, 'MANUAL', 'stale: arrived while the assistant was offline');
+      await this.d.attention.create({
+        messageId: last.id,
+        chatId: chat.id,
+        reason: 'STALE',
+        detail: 'arrived while the assistant was offline',
+        displayText: this.burstTexts(burst) || `[${last.type.toLowerCase()}]`,
+        userLabel: labelOf(sender, chat),
+        waitingMessageSent: false,
+        notify: settings.notifyOwnerAttention,
+        burstMessageIds: burst.map((m) => m.id),
+      });
       return;
     }
 

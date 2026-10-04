@@ -46,6 +46,15 @@ d('infrastructure (real PostgreSQL)', () => {
     expect(await q.recoverStale()).toBeGreaterThan(0);
   });
 
+  it('database sessions run in UTC so raw now() matches Prisma timestamps', async () => {
+    const rows = await tdb.db.$queryRaw<Array<{ tz: string }>>`SELECT current_setting('TimeZone') AS tz`;
+    expect(rows[0]?.tz).toBe('UTC');
+    const q = new PgQueue(tdb.db);
+    // A job delayed by 1 h must not be claimable now (it was, 5 h early, with a UTC+5 session).
+    await q.enqueue('text', 't', {}, { runAt: new Date(Date.now() + 3_600_000) });
+    expect(await q.claim('text', 'w', 5)).toHaveLength(0);
+  });
+
   it('update idempotency: same update_id handled once; failures release the claim', async () => {
     const bot = new Bot('123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', {
       botInfo: { id: 1, is_bot: true, first_name: 'b', username: 'b_bot', can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: true, has_main_web_app: false } as never,

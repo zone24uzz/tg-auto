@@ -25,6 +25,7 @@ const REASON_LABELS: Record<string, string> = {
   MEDIA_FAILED: 'Mediani tahlil qilib bo‘lmadi',
   MEDIA_TOO_LARGE: 'Fayl juda katta',
   MANUAL: 'Qo‘lda javob beriladigan foydalanuvchi',
+  STALE: 'Bot o‘chiq yoki uzilgan paytda kelgan xabar',
   POLICY_BLOCKED: 'AI javobi xavfsizlik filtridan o‘tmadi',
 };
 

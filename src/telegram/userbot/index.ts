@@ -5,6 +5,7 @@ import { childLogger } from '../../logging/logger.js';
 import { describeError, registerSecrets } from '../../logging/sanitize.js';
 import type { NormalizedSender } from '../../messages/types.js';
 import { escapeHtml } from '../common/html.js';
+import { catchUpUnread } from './catch-up.js';
 import { closeClient, createMtprotoClient, isAuthLostError, type ClientBundle } from './client.js';
 import { MtprotoDownloader } from './downloader.js';
 import { registerEventHandlers } from './events.js';
@@ -19,7 +20,21 @@ export { MTPROTO_FILE_PREFIX } from '../../app/userbot-contract.js';
 const log = childLogger('userbot');
 
 const LOGIN_REQUIRED_TEXT = '🔐 Userbot ulanmagan. Ulash uchun botga /login yuboring.';
-const HEALTH_CHECK_MS = 10 * 60_000;
+/** Liveness probe of the MTProto connection; two failures in a row trigger a full reconnect. */
+const HEALTH_CHECK_MS = 2 * 60_000;
+const HEALTH_TIMEOUT_MS = 20_000;
+const HEALTH_FAILURES_BEFORE_RECONNECT = 2;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 const RETRY_BASE_MS = 30_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
@@ -43,6 +58,7 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
   private healthTimer: ReturnType<typeof setInterval> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retries = 0;
+  private healthFailures = 0;
   private starting = false;
   private stopped = false;
   private readonly store: SessionStore;
@@ -196,16 +212,24 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     await this.deps.connections.ensureUserbotConnection(meId);
     this.bundle = bundle;
     this.source = source;
-    this.unregister = registerEventHandlers({
+    const eventContext = {
       client: bundle.client,
       connectionId: `userbot:${meId}`,
       owner: { id: meId, sender: owner },
       business: this.deps.business,
       transport: this.transport,
-    });
+    };
+    this.unregister = registerEventHandlers(eventContext);
     this.state = { state: 'ready', userId: meId, username: me.username };
     this.deps.onReady(this.transport);
+    this.healthFailures = 0;
     this.startHealthCheck();
+    // Answer messages that arrived while the client was offline (restart, network outage, sleep).
+    void catchUpUnread(eventContext)
+      .then(async (count) => {
+        if (count > 0) await this.deps.events.info('userbot', `caught up ${count} unread message(s) after connecting`);
+      })
+      .catch((error: unknown) => log.warn({ error: describeError(error) }, 'userbot catch-up failed'));
     log.info({ source }, 'userbot connected');
     await this.deps.events.info('userbot', `connected as account ${meId} (${source} session)`);
     // The login flow tells the owner itself; on startup the admin is warned here.
@@ -242,11 +266,31 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     const client = this.bundle?.client;
     if (!client || this.state.state !== 'ready') return;
     try {
-      await client.invoke(new Api.updates.GetState());
+      await withTimeout(client.invoke(new Api.updates.GetState()), HEALTH_TIMEOUT_MS);
+      this.healthFailures = 0;
     } catch (error) {
-      if (isAuthLostError(error)) await this.authLost(error);
-      else log.debug({ error: describeError(error) }, 'userbot health check failed (transient)');
+      if (isAuthLostError(error)) {
+        await this.authLost(error);
+        return;
+      }
+      this.healthFailures++;
+      log.warn({ error: describeError(error), failures: this.healthFailures }, 'userbot health check failed');
+      // GramJS' own reconnect can get stuck after a network outage or sleep: rebuild the client.
+      if (this.healthFailures >= HEALTH_FAILURES_BEFORE_RECONNECT) await this.reconnect(describeError(error, 200));
     }
+  }
+
+  /** Drops the current client and connects again with the stored session (catch-up runs on success). */
+  private async reconnect(reason: string): Promise<void> {
+    if (this.state.state !== 'ready' || this.stopped) return;
+    this.healthFailures = 0;
+    const bundle = this.detach();
+    this.state = { state: 'connecting' };
+    if (bundle) await closeClient(bundle.client);
+    log.warn({ reason }, 'userbot connection lost; reconnecting');
+    await this.deps.events.warn('userbot', `connection lost (${reason}); reconnecting`);
+    this.retries = 0;
+    await this.start();
   }
 
   private async authLost(error: unknown): Promise<void> {
