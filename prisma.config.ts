@@ -2,11 +2,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { defineConfig } from 'prisma/config';
 
-// Same rule as src/config/dotenv.ts (a project .env overrides inherited shell variables), kept inline so
-// the config also works inside the runtime image, which has no src/ folder. Docker/Render have no .env file.
+// Loads the project .env for the Prisma CLI without overriding variables that are already set, so a
+// one-off `DATABASE_URL=<remote> prisma migrate deploy` targets that database. Kept inline (no src/
+// import) so the config also works inside the runtime image. Docker/Render have no .env file.
 if (existsSync('.env')) {
   for (const [key, value] of Object.entries(parseEnv(readFileSync('.env', 'utf8')))) {
-    if (value !== undefined) process.env[key] = value;
+    if (value !== undefined && process.env[key] === undefined) process.env[key] = value;
   }
 }
 
