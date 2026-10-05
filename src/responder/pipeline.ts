@@ -456,8 +456,9 @@ export class ReplyPipeline {
 
       let routed;
       try {
+        const { GITHUB_TOOLS } = await import('../plugins/github.js');
         routed = await this.d.ai.generateReply(
-          { system: built.system, messages: built.messages, maxOutputTokens: built.maxOutputTokens, temperature: 0.7 },
+          { system: built.system, messages: built.messages, maxOutputTokens: built.maxOutputTokens, temperature: 0.7, tools: GITHUB_TOOLS },
           { messageId: last.id },
         );
       } catch (error) {
@@ -470,6 +471,17 @@ export class ReplyPipeline {
         await this.d.events.error('ai', `reply generation failed: ${detail}`);
         if (ownerApproved) return 'failed';
         await this.ownerPath(ctx, 'AI_FAILED', detail.slice(0, 200), 'fallback');
+        return 'owner';
+      }
+
+      if (routed.result.toolCalls && routed.result.toolCalls.length > 0) {
+        stopTyping();
+        const call = routed.result.toolCalls[0];
+        const detail = JSON.stringify({ name: call.name, args: call.args });
+        
+        // Wait, if it's ownerApproved, it means the owner clicked "Let AI reply" earlier.
+        // We still need to approve the tool.
+        await this.ownerPath(ctx, 'TOOL_APPROVAL_1', detail, 'personal');
         return 'owner';
       }
 

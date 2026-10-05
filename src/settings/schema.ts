@@ -195,7 +195,7 @@ export function buildDefaultSettings(env: Env): Settings {
     customDelayMaxSec: 6,
     typingIndicator: true,
     debounceSeconds: 2,
-    historyWindow: 20,
+    historyWindow: 50,
     summaryEnabled: true,
     summaryEveryMessages: 40,
 

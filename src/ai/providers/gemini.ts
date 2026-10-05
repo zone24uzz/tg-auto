@@ -81,6 +81,7 @@ interface GeminiResponsePart {
   thought?: boolean;
   inlineData?: { mimeType?: string; data?: string };
   inline_data?: { mime_type?: string; data?: string };
+  functionCall?: { name: string; args: Record<string, unknown> };
 }
 interface GeminiResponse {
   candidates?: Array<{ content?: { parts?: GeminiResponsePart[] }; finishReason?: string }>;
@@ -110,12 +111,14 @@ interface RunParams {
   timeoutMs?: number;
   label: string;
   allowEmpty?: boolean;
+  tools?: import('../types.js').ToolDefinition[];
 }
 
 interface RunResult {
   text: string;
   usage: TokenUsage;
   finishReason?: string;
+  toolCalls?: import('../types.js').ToolCall[];
 }
 
 function stripModelsPrefix(model: string): string {
@@ -133,14 +136,17 @@ function usageOf(res: GeminiResponse): TokenUsage {
   };
 }
 
-function toGeminiContents(turns: ChatTurn[]): GeminiContent[] {
+function toGeminiContents(turns: ChatTurn[]): any[] {
   return normalizeTurns(turns).map((turn) => ({
     role: turn.role === 'assistant' ? 'model' : 'user',
     parts: turn.parts.map(
-      (p): GeminiRequestPart =>
-        p.type === 'text'
-          ? { text: p.text }
-          : { inline_data: { mime_type: p.image.mimeType, data: p.image.data.toString('base64') } },
+      (p): any => {
+        if (p.type === 'text') return { text: p.text };
+        if (p.type === 'image') return { inline_data: { mime_type: p.image.mimeType, data: p.image.data.toString('base64') } };
+        if (p.type === 'tool_call') return { functionCall: { name: p.call.name, args: p.call.args } };
+        if (p.type === 'tool_result') return { functionResponse: { name: p.toolCallId, response: { result: p.result } } };
+        return { text: '' };
+      }
     ),
   }));
 }
@@ -231,6 +237,7 @@ export class GeminiProvider implements AIProvider {
       effort: req.reasoningEffort,
       json: req.json,
       timeoutMs: req.timeoutMs,
+      tools: req.tools,
       label: 'generateContent',
     });
     return {
@@ -240,6 +247,7 @@ export class GeminiProvider implements AIProvider {
       model,
       finishReason: res.finishReason,
       latencyMs: Math.round(nowMs() - started),
+      toolCalls: res.toolCalls,
     };
   }
 
@@ -408,6 +416,7 @@ export class GeminiProvider implements AIProvider {
       const body: Record<string, unknown> = { contents };
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
+      if (p.tools && p.tools.length > 0) body.tools = [{ functionDeclarations: p.tools }];
 
       try {
         const res = await this.post(p.model, body, p.timeoutMs, p.label);
@@ -451,7 +460,19 @@ export class GeminiProvider implements AIProvider {
       .filter((part) => part.thought !== true && typeof part.text === 'string')
       .map((part) => part.text ?? '')
       .join('');
-    if (!text.trim() && !p.allowEmpty) {
+      
+    const toolCalls: import('../types.js').ToolCall[] = [];
+    for (const part of (candidate.content?.parts ?? [])) {
+      if (part.functionCall) {
+        toolCalls.push({
+          id: Math.random().toString(36).substring(2, 9),
+          name: part.functionCall.name,
+          args: part.functionCall.args,
+        });
+      }
+    }
+
+    if (!text.trim() && toolCalls.length === 0 && !p.allowEmpty) {
       throw new AIProviderError(`gemini: empty response (finishReason ${finishReason ?? 'unknown'})`, 'gemini', 'EMPTY', {
         retryable: false,
       });
@@ -460,6 +481,7 @@ export class GeminiProvider implements AIProvider {
       text: p.json ? requireJsonObject('gemini', text) : text,
       usage: usageOf(res),
       finishReason,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }
 }

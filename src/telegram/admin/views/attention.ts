@@ -57,9 +57,21 @@ export function buildAttentionItem(it: AttentionItem, now: Date, timezone: strin
   if (!pending) lines.push('', RESOLVED);
   const kb = new Kb();
   if (pending) {
-    kb.row(btn('💬 Reply', cb(ROUTES.attentionReply, it.id, 'v')), btn('🤖 Let AI reply', cb(ROUTES.attentionAi, it.id, 'v')))
-      .row(btn('🚫 Ignore', cb(ROUTES.attentionIgnore, it.id, 'v')))
-      .row(it.senderTelegramUserId !== null ? btn('👤 Always manual for this user', cb(ROUTES.attentionManual, it.id, 'v')) : null);
+    if (it.reason === 'TOOL_APPROVAL_1') {
+      const call = JSON.parse(it.detail || '{}');
+      lines.push('', `🛠 <b>AI amal bajarmokchi:</b> <code>${call.name}</code>`, `<b>Parametrlar:</b> <pre>${JSON.stringify(call.args, null, 2)}</pre>`);
+      kb.row(btn('✅ Ruxsat berish (1-bosqich)', cb(ROUTES.attentionAi, it.id, 't1')))
+        .row(btn('🚫 Rad etish', cb(ROUTES.attentionIgnore, it.id, 'v')));
+    } else if (it.reason === 'TOOL_APPROVAL_2') {
+      const call = JSON.parse(it.detail || '{}');
+      lines.push('', `🚨 <b>Xavfsizlik tasdig'i:</b> Haqiqatan ham <code>${call.name}</code> bajarilsinmi?`);
+      kb.row(btn('⚠️ Tasdiqlayman (Bajarish)', cb(ROUTES.attentionAi, it.id, 't2')))
+        .row(btn('🚫 Bekor qilish', cb(ROUTES.attentionIgnore, it.id, 'v')));
+    } else {
+      kb.row(btn('💬 Reply', cb(ROUTES.attentionReply, it.id, 'v')), btn('🤖 Let AI reply', cb(ROUTES.attentionAi, it.id, 'v')))
+        .row(btn('🚫 Ignore', cb(ROUTES.attentionIgnore, it.id, 'v')))
+        .row(it.senderTelegramUserId !== null ? btn('👤 Always manual for this user', cb(ROUTES.attentionManual, it.id, 'v')) : null);
+    }
   }
   kb.row(
     btn('🔎 Xabar tafsiloti', cb(ROUTES.messageOpen, it.messageId, 'oa', it.id)),
@@ -175,6 +187,50 @@ export function registerAttention(kit: AdminKit): void {
     if (!item) return { text: 'Element topilmadi.', alert: true };
     if (item.status !== 'PENDING') return { text: RESOLVED, alert: true };
     const adminId = adminIdOf(kit, ctx);
+    
+    if (flag === 't1') {
+      // Step 1 approved. Move to Step 2.
+      await kit.deps.db.ownerAttention.update({
+        where: { id: item.id },
+        data: { reason: 'TOOL_APPROVAL_2' }
+      });
+      await showItem(ctx, item.id);
+      return '1-bosqich tasdiqlandi. Ikkinchisini kuting.';
+    }
+    
+    if (flag === 't2') {
+      // Step 2 approved. Execute tool.
+      setNotice(ctx, '🛠 Tool bajarilmoqda...');
+      await showItem(ctx, item.id);
+      
+      const { executeGithubTool } = await import('../../../plugins/github.js');
+      const call = JSON.parse(item.detail || '{}');
+      const result = await executeGithubTool(call.name, call.args);
+      
+      // Store tool result as a synthetic message so AI sees it
+      await kit.deps.db.message.create({
+        data: {
+          chatId: item.chatId,
+          direction: 'INCOMING',
+          telegramMessageId: 0,
+          telegramDate: new Date(),
+          type: 'OTHER',
+          currentText: `[SYSTEM] Tool ${call.name} execution result: ${result}`,
+          status: 'ANSWERED'
+        }
+      });
+      
+      // Now enqueue the AI response job which will read history and reply.
+      const jobId = await deps.queue.enqueue(
+        'text',
+        'attention.ai',
+        { attentionId: item.id, adminId: adminId.toString() },
+        { dedupeKey: `attention-ai:${item.id}:${Date.now()}` },
+      );
+      await markNotification(ctx, item.id, '🤖 Tool bajarildi. AI javob tayyorlamoqda…');
+      return 'Tool muvaffaqiyatli bajarildi!';
+    }
+    
     const jobId = await deps.queue.enqueue(
       'text',
       'attention.ai',

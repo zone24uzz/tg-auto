@@ -14,17 +14,33 @@ export interface ImageInput {
   mimeType: string;
 }
 
-export type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: ImageInput };
-
-export interface ChatTurn {
-  role: 'user' | 'assistant';
-  parts: ContentPart[];
-}
-
 export interface JsonOutputSpec {
   /** JSON Schema (draft-07 subset: type/properties/required/enum/items/description). */
   schema: Record<string, unknown>;
   name?: string;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export type ContentPart = 
+  | { type: 'text'; text: string } 
+  | { type: 'image'; image: ImageInput }
+  | { type: 'tool_call'; call: ToolCall }
+  | { type: 'tool_result'; toolCallId: string; result: any };
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  parts: ContentPart[];
 }
 
 export interface GenerateTextRequest {
@@ -39,6 +55,7 @@ export interface GenerateTextRequest {
   /** Ask for a JSON object matching the schema; `text` will contain the JSON string. */
   json?: JsonOutputSpec;
   timeoutMs?: number;
+  tools?: ToolDefinition[];
 }
 
 export interface TokenUsage {
@@ -54,6 +71,7 @@ export interface GenerateTextResult {
   model: string;
   finishReason?: string;
   latencyMs: number;
+  toolCalls?: ToolCall[];
 }
 
 export interface AnalyzeImageRequest {
