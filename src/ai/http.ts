@@ -324,7 +324,7 @@ export function buildVideoContextParts(req: AnalyzeVideoContextRequest): Content
 
 /** Drops empty text parts and turns without content (providers reject both). */
 export function cleanParts(parts: ContentPart[]): ContentPart[] {
-  return parts.filter((p) => p.type === 'image' || p.text.trim().length > 0);
+  return parts.filter((p) => p.type === 'image' || p.type === 'tool_call' || p.type === 'tool_result' || (p.type === 'text' && p.text.trim().length > 0));
 }
 
 /**

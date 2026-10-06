@@ -476,7 +476,7 @@ export class ReplyPipeline {
 
       if (routed.result.toolCalls && routed.result.toolCalls.length > 0) {
         stopTyping();
-        const call = routed.result.toolCalls[0];
+        const call = routed.result.toolCalls[0]!;
         const detail = JSON.stringify({ name: call.name, args: call.args });
         
         // Wait, if it's ownerApproved, it means the owner clicked "Let AI reply" earlier.
