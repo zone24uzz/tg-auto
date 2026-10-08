@@ -7,6 +7,7 @@ import { ConfigError, loadEnv } from './config/env.js';
 import { pingDb, waitForDb } from './database/client.js';
 import { logger } from './logging/logger.js';
 import { describeError } from './logging/sanitize.js';
+import { publishAdminCommands } from './telegram/admin/commands-menu.js';
 import { createAdminComposer } from './telegram/admin/index.js';
 import { WEBHOOK_PATHS, startHttpServer } from './telegram/common/webhook-server.js';
 import { ADMIN_ALLOWED_UPDATES, MAIN_ALLOWED_UPDATES, configureAdminBot, configureMainBot } from './telegram/main/bot.js';
@@ -92,6 +93,10 @@ async function main(): Promise<void> {
 
   await c.mainBot.init();
   await c.adminBot?.init();
+  // The owner's "/" command menu, re-published on every start so it always matches the code.
+  await publishAdminCommands((c.adminBot ?? c.mainBot).api, env.ADMIN_TELEGRAM_USER_ID, { userbot: env.TELEGRAM_TRANSPORT === 'userbot' }).catch((error: unknown) =>
+    logger.warn({ err: error }, 'could not publish the admin command menu'),
+  );
   if (env.TELEGRAM_TRANSPORT === 'business' && !c.mainBot.botInfo.can_connect_to_business) {
     logger.warn(
       'Business Mode is OFF for this bot. Enable it in @BotFather → /mybots → Bot Settings → Business Mode, then connect the bot in Telegram → Settings → Telegram Business → Chatbots.',

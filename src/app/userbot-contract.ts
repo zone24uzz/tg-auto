@@ -13,6 +13,10 @@ export interface MtprotoOptions {
   obfuscated: boolean;
 }
 
+/** Admin-chat commands handled by the userbot composer (/login QR, /cancel_login, /logout, /userbot status). */
+export const USERBOT_COMMANDS = ['login', 'cancel_login', 'logout', 'userbot'] as const;
+export type UserbotCommand = (typeof USERBOT_COMMANDS)[number];
+
 /** Prefix of media file references created by the userbot normalizer: `mt:<chatId>:<messageId>:<index>`. */
 export const MTPROTO_FILE_PREFIX = 'mt:';
 

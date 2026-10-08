@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import type { Api } from 'telegram';
 import type { QrCodeAuthParams } from 'telegram/client/auth.js';
 import { RPCError } from 'telegram/errors/index.js';
-import type { UserbotStatus } from '../../app/userbot-contract.js';
+import { USERBOT_COMMANDS, type UserbotCommand, type UserbotStatus } from '../../app/userbot-contract.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
 import { cb, parseCb } from '../admin/callback-data.js';
@@ -59,8 +59,8 @@ class LoginCancelledError extends Error {
   }
 }
 
-type Command = 'login' | 'cancel_login' | 'logout' | 'userbot';
-const COMMANDS: readonly string[] = ['login', 'cancel_login', 'logout', 'userbot'];
+type Command = UserbotCommand;
+const COMMANDS: readonly string[] = USERBOT_COMMANDS;
 
 export function parseCommand(text: string, botUsername: string | undefined): Command | null {
   const m = /^\/([a-z_]+)(?:@([A-Za-z0-9_]+))?(?:\s|$)/.exec(text);
