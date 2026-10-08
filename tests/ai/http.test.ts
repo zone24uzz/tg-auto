@@ -64,9 +64,17 @@ describe('requestJson error mapping', () => {
   });
 
   it('caps Retry-After at 20s', async () => {
-    mockFetch([{ status: 429, headers: { 'retry-after': '120' }, json: {} }, { json: { ok: 1 } }]);
+    mockFetch([{ status: 429, headers: { 'retry-after': '45' }, json: {} }, { json: { ok: 1 } }]);
     await requestJson(opts);
     expect(sleep).toHaveBeenCalledWith(20_000);
+  });
+
+  it('fails fast on a long Retry-After (the router moves to the fallback model instead of waiting)', async () => {
+    const { calls } = mockFetch([{ status: 429, headers: { 'retry-after': '120' }, json: {} }, { json: { ok: 1 } }]);
+    const error = (await requestJson(opts).catch((e: unknown) => e)) as AIProviderError;
+    expect(error.options).toMatchObject({ quotaExhausted: true, cooldownMs: 120_000 });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('retries 503 and succeeds', async () => {

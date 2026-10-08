@@ -194,7 +194,15 @@ export class AIProviderError extends Error {
     message: string,
     public readonly provider: ProviderId,
     public readonly code: AIErrorCode,
-    public readonly options: { status?: number; retryable?: boolean; retryAfterMs?: number } = {},
+    public readonly options: {
+      status?: number;
+      retryable?: boolean;
+      retryAfterMs?: number;
+      /** 429 because a daily / billing quota is used up: retrying soon is pointless. */
+      quotaExhausted?: boolean;
+      /** How long the provider says the model stays unavailable (uncapped; from Retry-After / retryDelay). */
+      cooldownMs?: number;
+    } = {},
   ) {
     super(message);
     this.name = 'AIProviderError';

@@ -114,6 +114,17 @@ function parseRetryAfter(value: string | null): number | undefined {
   return undefined;
 }
 
+/** Gemini puts the wait into the body: `"retryDelay": "41328s"` (RetryInfo). */
+function bodyRetryDelayMs(bodyText: string): number | undefined {
+  const m = /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(bodyText);
+  return m ? Math.round(Number(m[1]) * 1000) : undefined;
+}
+
+/** A 429 that will not clear within a minute: per-day quota, billing quota, or a long retry delay. */
+export function isQuotaExhausted(bodyText: string, cooldownMs: number | undefined): boolean {
+  return /PerDay|insufficient_quota|billing/i.test(bodyText) || (cooldownMs !== undefined && cooldownMs >= 60_000);
+}
+
 function backoffMs(attempt: number): number {
   const exp = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt);
   return Math.round(exp + httpRuntime.random() * 250);
@@ -166,13 +177,23 @@ async function attemptOnce(opts: HttpRequestOptions): Promise<RawResponse> {
 
   if (!res.ok) {
     const code = statusToCode(res.status);
-    const excerpt = errorExcerpt(providerMessage(buf.toString('utf8')));
+    const bodyText = buf.toString('utf8');
+    const excerpt = errorExcerpt(providerMessage(bodyText));
     const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'));
+    const header = Number(res.headers.get('retry-after'));
+    const cooldownMs = bodyRetryDelayMs(bodyText) ?? (Number.isFinite(header) && header > 0 ? header * 1000 : undefined);
+    const quotaExhausted = res.status === 429 && isQuotaExhausted(bodyText, cooldownMs);
     throw new AIProviderError(
       `${opts.provider} HTTP ${res.status}${excerpt ? `: ${excerpt}` : ''}`,
       opts.provider,
       code,
-      { status: res.status, retryable: RETRYABLE_STATUS.has(res.status), retryAfterMs },
+      {
+        status: res.status,
+        retryable: RETRYABLE_STATUS.has(res.status) && !quotaExhausted,
+        retryAfterMs,
+        ...(cooldownMs !== undefined ? { cooldownMs } : {}),
+        ...(quotaExhausted ? { quotaExhausted } : {}),
+      },
     );
   }
   return { status: res.status, headers: res.headers, body: buf };
@@ -186,8 +207,10 @@ export async function requestRaw(opts: HttpRequestOptions): Promise<RawResponse>
       return await attemptOnce(opts);
     } catch (error) {
       if (!(error instanceof AIProviderError)) throw error;
+      // A used-up daily/billing quota will not clear in seconds: fail fast so the router moves on.
       const retryable =
-        error.code === 'NETWORK' || (error.options.status !== undefined && RETRYABLE_STATUS.has(error.options.status));
+        !error.options.quotaExhausted &&
+        (error.code === 'NETWORK' || (error.options.status !== undefined && RETRYABLE_STATUS.has(error.options.status)));
       if (!retryable || attempt >= maxRetries) throw error;
       const wait = error.options.retryAfterMs ?? backoffMs(attempt);
       log.debug(

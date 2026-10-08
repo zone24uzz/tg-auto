@@ -33,6 +33,8 @@ import { GlobalLimiter } from './global-limiter.js';
 import type { AiCallContext, AiRouter, RoutedResult } from './types.js';
 
 const log = childLogger('ai-router');
+/** Longest time a rate-limited model is skipped (daily quotas reset within a day). */
+const MAX_COOLDOWN_MS = 12 * 3_600_000;
 
 export interface AiRouterDeps {
   registry: Pick<ProviderRegistry, 'get' | 'configured' | 'defaultTranscriptionModel' | 'defaultTtsModel'>;
@@ -282,15 +284,38 @@ export class DefaultAiRouter implements AiRouter {
     return t.provider.generateText({ ...req, model: t.model, reasoningEffort: effort, timeoutMs: req.timeoutMs ?? this.timeoutMs });
   }
 
+  /**
+   * Models that answered 429 (per provider instance, i.e. per API key): skipped until the provider's
+   * retry delay passes, so an exhausted daily quota (e.g. 20 requests/day on a free tier) does not cost
+   * a failed call + latency on every message. When every target is cooling down, all are tried anyway.
+   */
+  private readonly cooling = new WeakMap<object, Map<string, number>>();
+
+  private coolingUntil(t: Target): number {
+    return this.cooling.get(t.provider)?.get(t.model) ?? 0;
+  }
+
+  private coolDown(t: Target, error: unknown): void {
+    if (!(error instanceof AIProviderError) || error.code !== 'RATE_LIMIT') return;
+    const ms = Math.min(error.options.cooldownMs ?? (error.options.quotaExhausted ? 15 * 60_000 : 60_000), MAX_COOLDOWN_MS);
+    let byModel = this.cooling.get(t.provider);
+    if (!byModel) this.cooling.set(t.provider, (byModel = new Map()));
+    byModel.set(t.model, Date.now() + ms);
+    log.warn({ provider: t.provider.id, model: t.model, cooldownSec: Math.round(ms / 1000), quotaExhausted: error.options.quotaExhausted ?? false }, 'model rate-limited; skipping it for a while');
+  }
+
   private async run<T>(
     operation: AiOperation,
     settings: Settings,
-    targets: Target[],
+    allTargets: Target[],
     ctx: AiCallContext | undefined,
     imageCount: number,
     call: (t: Target) => Promise<{ result: T; metering: Metering; effort: ReasoningEffort | undefined }>,
   ): Promise<RoutedResult<T>> {
     const attempts: Array<{ provider: ProviderId; model: string; error: string }> = [];
+    const now = Date.now();
+    const live = allTargets.filter((t) => this.coolingUntil(t) <= now);
+    const targets = live.length > 0 ? live : allTargets;
     for (const [index, t] of targets.entries()) {
       if (!this.limiter.tryAcquire(settings.globalAiRequestsPerMinute)) {
         attempts.push({ provider: t.provider.id, model: t.model, error: 'global AI requests-per-minute limit reached' });
@@ -325,13 +350,14 @@ export class DefaultAiRouter implements AiRouter {
           result,
           provider: t.provider.id,
           model: t.model,
-          usedFallback: index > 0,
+          usedFallback: t !== allTargets[0],
           costUsd,
           ...(reasoningEffort ? { reasoningEffort } : {}),
         };
       } catch (error) {
         const message = describeError(error, 300);
         attempts.push({ provider: t.provider.id, model: t.model, error: message });
+        this.coolDown(t, error);
         log.warn(
           {
             operation,
@@ -353,7 +379,7 @@ export class DefaultAiRouter implements AiRouter {
         });
       }
     }
-    if (targets.length === 0) log.warn({ operation }, 'no configured AI provider/model can handle this operation');
+    if (allTargets.length === 0) log.warn({ operation }, 'no configured AI provider/model can handle this operation');
     throw new AllProvidersFailedError(operation, attempts);
   }
 

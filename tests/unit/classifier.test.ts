@@ -6,6 +6,7 @@ import { buildDefaultSettings } from '../../src/settings/schema.js';
 import { testEnv } from '../support/env.js';
 
 const settings = buildDefaultSettings(testEnv());
+const ownerMode = { ...settings, uncertainAction: 'OWNER' as const };
 
 const MUST_GO_TO_OWNER = [
   'Qayerdasan?',
@@ -83,31 +84,44 @@ describe('combineClassification', () => {
     expect(r.route).toBe('OWNER');
   });
 
-  it('LLM owner categories always go to the owner; low confidence becomes REQUIRES_OWNER', () => {
+  it('confident owner categories go to the owner; weak or contradictory owner signals are uncertain', () => {
     const h = analyzeHeuristics('Ha, keladimi?');
     expect(combineClassification(h, llm('PERSONAL', 0.95), settings)).toMatchObject({ route: 'OWNER', category: 'PERSONAL' });
-    expect(combineClassification(h, llm('PERSONAL', 0.5), settings)).toMatchObject({ route: 'OWNER', category: 'REQUIRES_OWNER' });
-    expect(combineClassification(h, llm('NORMAL', 0.9, true), settings).route).toBe('OWNER');
+    // Uncertain → uncertainAction (AI by default, owner when configured).
+    expect(combineClassification(h, llm('PERSONAL', 0.5), settings).route).toBe('AUTO');
+    expect(combineClassification(h, llm('PERSONAL', 0.5), ownerMode)).toMatchObject({ route: 'OWNER', category: 'REQUIRES_OWNER' });
+    expect(combineClassification(h, llm('NORMAL', 0.9, true), settings).route).toBe('AUTO');
+    expect(combineClassification(h, llm('NORMAL', 0.9, true), ownerMode).route).toBe('OWNER');
+  });
+
+  it('a confident safe verdict wins over a weak personal-looking word; strong personal phrasing still wins', () => {
+    const weak = analyzeHeuristics('Turmush tarzi haqida maqola yozib bera olasizmi?');
+    expect(weak.personalScore).toBeGreaterThan(0);
+    expect(weak.personalScore).toBeLessThan(0.9);
+    expect(combineClassification(weak, llm('BUSINESS', 0.9), settings).route).toBe('AUTO');
+    expect(combineClassification(analyzeHeuristics('Qayerdasan hozir?'), llm('NORMAL', 0.95), settings).route).toBe('OWNER');
   });
 
   it('safe categories need confidence ≥ threshold, otherwise uncertainAction decides', () => {
     const h = analyzeHeuristics('Bu haqida gaplashsak bo‘ladimi?');
     expect(combineClassification(h, llm('BUSINESS', 0.85), settings).route).toBe('AUTO');
-    expect(combineClassification(h, llm('BUSINESS', 0.6), settings)).toMatchObject({ route: 'OWNER', category: 'REQUIRES_OWNER' });
-    expect(combineClassification(h, llm('BUSINESS', 0.6), { ...settings, uncertainAction: 'AI' }).route).toBe('AUTO');
+    expect(combineClassification(h, llm('BUSINESS', 0.6), settings).route).toBe('AUTO');
+    expect(combineClassification(h, llm('BUSINESS', 0.6), ownerMode)).toMatchObject({ route: 'OWNER', category: 'REQUIRES_OWNER' });
   });
 
   it('respects a custom threshold', () => {
     const h = analyzeHeuristics('Qanday texnologiyalar bilan ishlaysiz?');
-    expect(combineClassification(h, llm('BUSINESS', 0.85), { ...settings, personalThreshold: 0.9 }).route).toBe('OWNER');
+    expect(combineClassification(h, llm('BUSINESS', 0.85), { ...ownerMode, personalThreshold: 0.9 }).route).toBe('OWNER');
+    expect(combineClassification(h, llm('BUSINESS', 0.95), { ...ownerMode, personalThreshold: 0.9 }).route).toBe('AUTO');
   });
 
   it('confident spam is ignored', () => {
     expect(combineClassification(analyzeHeuristics('promo'), llm('SPAM', 0.95), settings).route).toBe('IGNORE');
   });
 
-  it('unknown messages without signals go to the owner by default', () => {
-    expect(combineClassification(analyzeHeuristics('hmm'), null, settings).route).toBe('OWNER');
+  it('unknown messages without signals follow uncertainAction (AI by default)', () => {
+    expect(combineClassification(analyzeHeuristics('hmm'), null, settings).route).toBe('AUTO');
+    expect(combineClassification(analyzeHeuristics('hmm'), null, ownerMode).route).toBe('OWNER');
   });
 
   it('detection disabled → AI answers (spam still ignored)', () => {
@@ -149,7 +163,8 @@ describe('MessageClassifier', () => {
     const bad = routerReturning('not json');
     expect((await new MessageClassifier(bad).classify({ text: 'Saytingiz qancha turadi?', history: [] }, settings)).route).toBe('AUTO');
     const failing = { classify: vi.fn(async () => Promise.reject(new Error('down'))) } as unknown as AiRouter;
-    expect((await new MessageClassifier(failing).classify({ text: 'hmm ok', history: [] }, settings)).route).toBe('OWNER');
+    expect((await new MessageClassifier(failing).classify({ text: 'hmm ok', history: [] }, ownerMode)).route).toBe('OWNER');
+    expect((await new MessageClassifier(failing).classify({ text: 'hmm ok', history: [] }, settings)).route).toBe('AUTO');
   });
 
   it('never lets user text override the classification instructions (output is schema-validated)', async () => {
