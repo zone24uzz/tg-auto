@@ -1,5 +1,6 @@
 import type { AuditService } from '../audit/audit.service.js';
 import type { Db } from '../database/client.js';
+import { currentTenantId } from '../tenancy/context.js';
 import type { RuleMatchType, UserMode } from '../generated/prisma/client.js';
 import { normalizeTag, normalizeUsername, type RuleRecord } from './rules.engine.js';
 
@@ -31,7 +32,8 @@ export function normalizeRuleValue(matchType: RuleMatchType, raw: string): strin
 }
 
 export class RulesService {
-  private cache: { rules: RuleRecord[]; at: number } | null = null;
+  /** Per-tenant cache. */
+  private readonly cache = new Map<number, { rules: RuleRecord[]; at: number }>();
 
   constructor(
     private readonly db: Db,
@@ -39,14 +41,16 @@ export class RulesService {
   ) {}
 
   async all(): Promise<RuleRecord[]> {
-    if (this.cache && Date.now() - this.cache.at < CACHE_TTL_MS) return this.cache.rules;
+    const tenantId = currentTenantId('rules');
+    const hit = this.cache.get(tenantId);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.rules;
     const rows = await this.db.userRule.findMany({ select: { matchType: true, matchValue: true, mode: true } });
-    this.cache = { rules: rows, at: Date.now() };
+    this.cache.set(tenantId, { rules: rows, at: Date.now() });
     return rows;
   }
 
   invalidate(): void {
-    this.cache = null;
+    this.cache.clear();
   }
 
   async list(mode: UserMode | undefined, take: number, skip: number) {
@@ -60,7 +64,7 @@ export class RulesService {
 
   async get(matchType: RuleMatchType, rawValue: string) {
     return this.db.userRule.findUnique({
-      where: { matchType_matchValue: { matchType, matchValue: normalizeRuleValue(matchType, rawValue) } },
+      where: { tenantId_matchType_matchValue: { tenantId: currentTenantId(), matchType, matchValue: normalizeRuleValue(matchType, rawValue) } },
     });
   }
 
@@ -72,9 +76,9 @@ export class RulesService {
     note?: string,
   ): Promise<void> {
     const matchValue = normalizeRuleValue(matchType, rawValue);
-    const existing = await this.db.userRule.findUnique({ where: { matchType_matchValue: { matchType, matchValue } } });
+    const existing = await this.db.userRule.findUnique({ where: { tenantId_matchType_matchValue: { tenantId: currentTenantId(), matchType, matchValue } } });
     await this.db.userRule.upsert({
-      where: { matchType_matchValue: { matchType, matchValue } },
+      where: { tenantId_matchType_matchValue: { tenantId: currentTenantId(), matchType, matchValue } },
       create: { matchType, matchValue, mode, note: note ?? null },
       update: { mode, ...(note !== undefined ? { note } : {}) },
     });
@@ -89,7 +93,7 @@ export class RulesService {
 
   async removeRule(matchType: RuleMatchType, rawValue: string, adminTelegramUserId: bigint): Promise<boolean> {
     const matchValue = normalizeRuleValue(matchType, rawValue);
-    const existing = await this.db.userRule.findUnique({ where: { matchType_matchValue: { matchType, matchValue } } });
+    const existing = await this.db.userRule.findUnique({ where: { tenantId_matchType_matchValue: { tenantId: currentTenantId(), matchType, matchValue } } });
     if (!existing) return false;
     await this.db.userRule.delete({ where: { id: existing.id } });
     this.invalidate();
@@ -105,7 +109,7 @@ export class RulesService {
   /** Explicit per-user mode (USER_ID rule) or null. */
   async userMode(telegramUserId: bigint): Promise<UserMode | null> {
     const rule = await this.db.userRule.findUnique({
-      where: { matchType_matchValue: { matchType: 'USER_ID', matchValue: telegramUserId.toString() } },
+      where: { tenantId_matchType_matchValue: { tenantId: currentTenantId(), matchType: 'USER_ID', matchValue: telegramUserId.toString() } },
     });
     return rule?.mode ?? null;
   }

@@ -1,6 +1,7 @@
 import type { ResolvedTelegramUser, UserbotAssistantApi } from '../app/userbot-contract.js';
 import type { Db } from '../database/client.js';
 import type { TelegramUser } from '../generated/prisma/client.js';
+import { currentTenantId } from '../tenancy/context.js';
 
 export interface PersonCandidate {
   telegramUserId: bigint;
@@ -44,7 +45,7 @@ export class PersonResolver {
 
     if (/^\d{5,20}$/.test(q)) {
       const id = BigInt(q);
-      const row = await this.db.telegramUser.findUnique({ where: { telegramUserId: id } });
+      const row = await this.db.telegramUser.findFirst({ where: { telegramUserId: id } });
       return { status: 'one', person: row ? fromRow(row) : { telegramUserId: id, label: `id ${q}` } };
     }
 
@@ -96,7 +97,7 @@ export class PersonResolver {
       ...(user.isContact !== undefined ? { isContact: user.isContact } : {}),
     };
     const row = await this.db.telegramUser.upsert({
-      where: { telegramUserId: user.id },
+      where: { tenantId_telegramUserId: { tenantId: currentTenantId(), telegramUserId: user.id } },
       create: { telegramUserId: user.id, ...data },
       update: data,
     });

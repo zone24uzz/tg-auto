@@ -1,4 +1,5 @@
 import type { ProviderRegistry } from '../../ai/registry.js';
+import type { Context } from 'grammy';
 import type { AssistantPort } from '../../assistant/assistant.service.js';
 import type { AuditService } from '../../audit/audit.service.js';
 import type { PromptService } from '../../conversations/prompt.service.js';
@@ -15,6 +16,7 @@ import type { SettingsService } from '../../settings/settings.service.js';
 import type { StatsService } from '../../statistics/stats.service.js';
 import type { UsageService } from '../../statistics/usage.service.js';
 import type { UsersService } from '../../users/users.service.js';
+import type { AccessService } from '../../tenancy/access.service.js';
 import type { ConnectionService } from '../main/connection.service.js';
 
 /** Everything the admin bot UI needs. Built in src/app/container.ts. */
@@ -43,4 +45,8 @@ export interface AdminDeps {
   cleanup: CleanupService;
   /** Owner's personal assistant (free-text commands, /tasks). Optional: absent → plain hint. */
   assistant?: AssistantPort;
+  /** Super-admin access decisions (Access menu). */
+  access?: AccessService;
+  /** First contact for people without an active workspace (/start → settings → access request). */
+  onboarding?: { handle(ctx: Context): Promise<void> };
 }

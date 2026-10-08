@@ -1,4 +1,5 @@
 import type { Db } from '../database/client.js';
+import { currentTenantOrNull } from '../tenancy/context.js';
 import type { Job } from '../generated/prisma/client.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { isUniqueViolation } from '../messages/message.repository.js';
@@ -31,12 +32,18 @@ export class PgQueue {
   }
 
   async enqueue(queue: QueueName, type: string, payload: Prisma.InputJsonValue, opts: EnqueueOptions = {}): Promise<number | null> {
+    // The worker runs the job in the tenant scope it was enqueued from (src/app/jobs.ts jobScope).
+    const tenant = currentTenantOrNull();
+    const scoped =
+      tenant && payload && typeof payload === 'object' && !Array.isArray(payload) && !('__tenantId' in payload)
+        ? { ...payload, __tenantId: tenant.tenantId }
+        : payload;
     try {
       const job = await this.db.job.create({
         data: {
           queue,
           type,
-          payload,
+          payload: scoped,
           runAt: opts.runAt ?? new Date(),
           dedupeKey: opts.dedupeKey ?? null,
           maxAttempts: opts.maxAttempts ?? 3,

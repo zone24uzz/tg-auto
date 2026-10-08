@@ -92,7 +92,7 @@ d('infrastructure (real PostgreSQL)', () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]!.action).toBe('MODEL_CHANGED');
     // A corrupted row falls back to the default instead of crashing.
-    await tdb.db.setting.update({ where: { key: 'aiModel' }, data: { value: 12345 } });
+    await tdb.db.setting.updateMany({ where: { key: 'aiModel' }, data: { value: 12345 } });
     s.invalidate();
     expect((await s.get()).aiModel).toBe(testEnv().DEFAULT_AI_MODEL);
   });

@@ -24,6 +24,7 @@ import { displayUser } from '../telegram/common/html.js';
 import type { AdminNotifier } from '../telegram/admin/notifier.js';
 import type { TelegramSender } from '../telegram/main/sender.js';
 import { localDateKey, sleep } from '../utils/time.js';
+import { currentTenantId, currentTenantOrNull } from '../tenancy/context.js';
 import { remainingDelayMs, targetDelayMs } from './delay.js';
 import { ChatLease } from './lease.js';
 import type { ReplySender, SendOutcome } from './reply-sender.js';
@@ -140,6 +141,11 @@ export class ReplyPipeline {
     });
   }
 
+  /** The owner of the workspace being served (the super-admin outside a tenant scope, e.g. in tests). */
+  private ownerId(): bigint {
+    return currentTenantOrNull()?.ownerTelegramUserId ?? this.d.adminTelegramUserId;
+  }
+
   async processMessage(messageId: number, queue: QueueName): Promise<void> {
     let message = await this.d.db.message.findUnique({ where: { id: messageId } });
     if (!message || message.direction !== 'INCOMING' || TERMINAL.has(message.status)) return;
@@ -235,7 +241,7 @@ export class ReplyPipeline {
 
     // 1. The connection must belong to the admin (never trust the stored `authorized` flag alone),
     //    be enabled and allowed to reply.
-    if (chat.connection.ownerUserId !== this.d.adminTelegramUserId || !chat.connection.isEnabled) {
+    if (chat.connection.ownerUserId !== this.ownerId() || !chat.connection.isEnabled) {
       await this.setStatuses(burst, 'SKIPPED', 'connection not owned by the admin or disabled');
       return;
     }
@@ -456,9 +462,11 @@ export class ReplyPipeline {
 
       let routed;
       try {
-        const { GITHUB_TOOLS } = await import('../plugins/github.js');
+        // Tool actions run with the deployment's own credentials (GITHUB_TOKEN): only the super-admin's
+        // workspace may be offered them, never another tenant.
+        const tools = this.ownerId() === this.d.adminTelegramUserId && process.env.GITHUB_TOKEN ? (await import('../plugins/github.js')).GITHUB_TOOLS : undefined;
         routed = await this.d.ai.generateReply(
-          { system: built.system, messages: built.messages, maxOutputTokens: built.maxOutputTokens, temperature: 0.7, tools: GITHUB_TOOLS },
+          { system: built.system, messages: built.messages, maxOutputTokens: built.maxOutputTokens, temperature: 0.7, ...(tools ? { tools } : {}) },
           { messageId: last.id },
         );
       } catch (error) {
@@ -485,7 +493,7 @@ export class ReplyPipeline {
         return 'owner';
       }
 
-      const policy = applyResponsePolicy(routed.result.text, { adminTelegramUserId: this.d.adminTelegramUserId });
+      const policy = applyResponsePolicy(routed.result.text, { adminTelegramUserId: this.ownerId() });
       if (!policy.ok) {
         stopTyping();
         await this.d.events.warn('policy', `reply blocked (${policy.violation}) for message ${last.id}`);
@@ -705,7 +713,7 @@ export class ReplyPipeline {
         where: { id: current.chatId },
         include: { connection: true, user: true },
       })) as LoadedChat;
-      if (chat.connection.ownerUserId !== this.d.adminTelegramUserId || !chat.connection.isEnabled || !chat.connection.canReply) return 'failed';
+      if (chat.connection.ownerUserId !== this.ownerId() || !chat.connection.isEnabled || !chat.connection.canReply) return 'failed';
       const settings = await this.d.settings.get();
       const result = await this.autoReply(
         {
@@ -897,10 +905,12 @@ export class ReplyPipeline {
     const today = localDateKey(new Date(), this.d.timezone);
     if (settings.costLimitNotifiedOn === today) return;
     // Conditional upsert: exactly one caller flips the stored day and wins the notification.
+    // Raw SQL is not tenant-scoped by the Prisma extension: the tenant goes in explicitly.
+    const tenantId = currentTenantId('cost limit');
     const won = await this.d.db.$queryRaw<Array<{ key: string }>>`
-      INSERT INTO settings (key, value, "updatedAt")
-      VALUES ('costLimitNotifiedOn', ${JSON.stringify(today)}::jsonb, now())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "updatedAt" = now()
+      INSERT INTO settings ("tenantId", key, value, "updatedAt")
+      VALUES (${tenantId}, 'costLimitNotifiedOn', ${JSON.stringify(today)}::jsonb, now())
+      ON CONFLICT ("tenantId", key) DO UPDATE SET value = EXCLUDED.value, "updatedAt" = now()
        WHERE settings.value IS DISTINCT FROM EXCLUDED.value
       RETURNING key`;
     this.d.settings.invalidate();

@@ -30,7 +30,7 @@ export class InputError extends Error {
 
 /** Re-checks the admin and returns their id (for audit). */
 export function adminIdOf(kit: AdminKit, ctx: Context): bigint {
-  return requireAdmin(ctx, kit.deps.adminTelegramUserId);
+  return requireAdmin(ctx);
 }
 
 /** Validated, audited settings write with a dynamic key (SettingsService validates the value). */

@@ -3,24 +3,30 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Db } from '../../src/database/client.js';
 import { ContentCipher } from '../../src/security/crypto.js';
 import { SessionStore } from '../../src/telegram/userbot/session-store.js';
+import { TEST_TENANT_ID } from '../support/tenant-scope.js';
 
 interface Row {
-  id: string;
+  tenantId: number;
   session: string;
   ownerUserId: bigint;
 }
 
+/** Keyed by tenantId (one session per workspace); the real DB scopes deleteMany({}) to the tenant. */
 function fakeDb() {
-  const rows = new Map<string, Row>();
+  const rows = new Map<number, Row>();
   const userbotSession = {
-    findUnique: vi.fn(async (q: { where: { id: string } }) => rows.get(q.where.id) ?? null),
-    upsert: vi.fn(async (q: { where: { id: string }; create: Row; update: Omit<Row, 'id'> }) => {
-      const existing = rows.get(q.where.id);
-      const row = existing ? { ...existing, ...q.update } : q.create;
-      rows.set(q.where.id, row);
+    findUnique: vi.fn(async (q: { where: { tenantId: number } }) => rows.get(q.where.tenantId) ?? null),
+    upsert: vi.fn(async (q: { where: { tenantId: number }; create: Omit<Row, 'tenantId'>; update: Omit<Row, 'tenantId'> }) => {
+      const existing = rows.get(q.where.tenantId);
+      const row = existing ? { ...existing, ...q.update } : { tenantId: q.where.tenantId, ...q.create };
+      rows.set(q.where.tenantId, row);
       return row;
     }),
-    deleteMany: vi.fn(async (q: { where: { id: string } }) => ({ count: rows.delete(q.where.id) ? 1 : 0 })),
+    deleteMany: vi.fn(async () => {
+      const count = rows.size;
+      rows.clear();
+      return { count };
+    }),
   };
   return { rows, db: { userbotSession } as unknown as Pick<Db, 'userbotSession'> };
 }
@@ -33,7 +39,7 @@ describe('userbot session store', () => {
     const { rows, db } = fakeDb();
     const store = new SessionStore(db, new ContentCipher(key()));
     expect(await store.save(SESSION, 424242n)).toBe(true);
-    const stored = rows.get('default')!;
+    const stored = rows.get(TEST_TENANT_ID)!;
     expect(stored.session.startsWith('enc:v1:')).toBe(true);
     expect(stored.session).not.toContain(SESSION.slice(0, 40));
     expect(stored.ownerUserId).toBe(424242n);

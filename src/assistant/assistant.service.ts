@@ -73,15 +73,20 @@ const HELP = [
  * Only the owner can reach this (the admin guard runs first); contacts never trigger actions.
  */
 export class OwnerAssistant implements AssistantPort {
-  private userbot: UserbotAssistantApi | null = null;
+  /** Resolves the userbot of the workspace being served (one MTProto account per workspace). */
+  private userbotOf: () => UserbotAssistantApi | null = () => null;
   private readonly resolver: PersonResolver;
 
   constructor(private readonly d: AssistantDeps) {
     this.resolver = new PersonResolver(d.db, () => this.userbot);
   }
 
-  attachUserbot(api: UserbotAssistantApi | null): void {
-    this.userbot = api;
+  private get userbot(): UserbotAssistantApi | null {
+    return this.userbotOf();
+  }
+
+  attachUserbot(api: UserbotAssistantApi | null | (() => UserbotAssistantApi | null)): void {
+    this.userbotOf = typeof api === 'function' ? api : () => api;
   }
 
   private now(): Date {
@@ -129,7 +134,7 @@ export class OwnerAssistant implements AssistantPort {
         if (!Number.isInteger(id) || !b || !/^\d{1,20}$/.test(b)) return { text: 'ℹ️ Bu tanlov eskirgan.' };
         const draft = await this.d.db.assistantTask.findUnique({ where: { id } });
         if (!draft || draft.active || draft.confirmed || draft.targetTelegramUserId !== null) return { text: 'ℹ️ Bu tanlov eskirgan.' };
-        const user = await this.d.db.telegramUser.findUnique({ where: { telegramUserId: BigInt(b) } });
+        const user = await this.d.db.telegramUser.findFirst({ where: { telegramUserId: BigInt(b) } });
         const person: PersonCandidate = { telegramUserId: BigInt(b), label: user ? labelOf(user) : `id ${b}` };
         await this.d.db.assistantTask.delete({ where: { id } });
         return this.createForPerson(draft.kind, person, draft.repeat, this.d.cipher.decrypt(draft.text) ?? undefined);
@@ -246,7 +251,7 @@ export class OwnerAssistant implements AssistantPort {
     // WATCH_ONLINE: check the current presence once, so "already online" is reported right away.
     let extra = '';
     try {
-      const user = await this.d.db.telegramUser.findUnique({ where: { telegramUserId: person.telegramUserId } });
+      const user = await this.d.db.telegramUser.findFirst({ where: { telegramUserId: person.telegramUserId } });
       const states = (await this.userbot?.presence([{ id: person.telegramUserId, accessHash: user?.accessHash ?? null }])) ?? new Map<bigint, PresenceState>();
       const state = states.get(person.telegramUserId);
       if (state) await this.d.db.assistantTask.update({ where: { id: task.id }, data: { lastPresence: state } });

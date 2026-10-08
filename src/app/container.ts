@@ -1,6 +1,6 @@
 import type { Bot } from 'grammy';
 import { DefaultAiRouter } from '../ai/router/ai-router.js';
-import { GlobalLimiter } from '../ai/router/global-limiter.js';
+import { TenantLimiter } from '../ai/router/global-limiter.js';
 import { ProviderRegistry } from '../ai/registry.js';
 import { OwnerAssistant } from '../assistant/assistant.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -27,6 +27,9 @@ import { TtsVoiceSynth } from '../responder/voice-synth.js';
 import { CleanupService } from '../retention/cleanup.service.js';
 import { RulesService } from '../rules/rules.service.js';
 import { ContentCipher } from '../security/crypto.js';
+import { TenantService } from '../tenancy/tenant.service.js';
+import { TenantProviderRegistry } from '../tenancy/ai-registry.js';
+import { currentTenantOrNull } from '../tenancy/context.js';
 import { buildDefaultSettings } from '../settings/schema.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { StatsService } from '../statistics/stats.service.js';
@@ -57,6 +60,7 @@ export function buildContainer(env: Env) {
   ]);
 
   const db: Db = createDb(env.DATABASE_URL);
+  const tenants = new TenantService(db);
   const cipher = new ContentCipher(env.DATA_ENCRYPTION_KEY);
   const audit = new AuditService(db);
   const events = new EventLog(db);
@@ -72,12 +76,13 @@ export function buildContainer(env: Env) {
   const queue = new PgQueue(db);
   const usage = new UsageService(db, env.TIMEZONE);
 
-  const registry = ProviderRegistry.fromEnv(env);
+  // Answers for the current workspace: the super-admin uses the env keys, everyone else their own key.
+  const registry = new TenantProviderRegistry(ProviderRegistry.fromEnv(env), env, cipher, env.ADMIN_TELEGRAM_USER_ID);
   const ai = new DefaultAiRouter({
     registry,
     settings,
     usage,
-    limiter: new GlobalLimiter(),
+    limiter: new TenantLimiter(() => currentTenantOrNull()?.tenantId ?? 0),
     timeoutMs: env.AI_REQUEST_TIMEOUT_MS,
   });
   const classifier = new MessageClassifier(ai);
@@ -87,7 +92,7 @@ export function buildContainer(env: Env) {
   const sender = new TelegramSender(mainBot.api);
   const replies = new ReplySender(db, repo, sender, cipher, events);
   const attention = new OwnerAttentionService(db, cipher, notifier, audit);
-  const connections = new ConnectionService(db, mainBot.api, env.ADMIN_TELEGRAM_USER_ID, notifier, events);
+  const connections = new ConnectionService(db, mainBot.api, notifier, events);
 
   const storage = createStorage(env);
   const ffmpeg = new Ffmpeg({ ffmpegPath: env.FFMPEG_PATH, ffprobePath: env.FFPROBE_PATH, tmpDir: env.MEDIA_TMP_DIR });
@@ -193,6 +198,7 @@ export function buildContainer(env: Env) {
     cleanup,
     business,
     assistant,
+    tenants,
   };
 }
 

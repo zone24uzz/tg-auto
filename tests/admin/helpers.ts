@@ -5,6 +5,7 @@ import { parseEnv } from '../../src/config/env.js';
 import { buildDefaultSettings, type Settings } from '../../src/settings/schema.js';
 import type { AdminDeps } from '../../src/telegram/admin/deps.js';
 import { createAdminComposer } from '../../src/telegram/admin/index.js';
+import { runWithTenant } from '../../src/tenancy/context.js';
 
 export const ADMIN_ID = 424242n;
 export const STRANGER_ID = 777001;
@@ -102,6 +103,10 @@ export function createTestBot(deps: object) {
         : true;
     return { ok: true, result } as never;
   });
+  // Like src/tenancy/bot-scope.ts in production: the admin's updates run in their workspace (#1).
+  bot.use((ctx, next) =>
+    ctx.from && BigInt(ctx.from.id) === ADMIN_ID ? runWithTenant({ tenantId: 1, ownerTelegramUserId: ADMIN_ID, language: 'uz' }, next) : next(),
+  );
   bot.use(createAdminComposer(deps as unknown as AdminDeps));
   bot.use((ctx) => {
     passedThrough.push(ctx.update.update_id);

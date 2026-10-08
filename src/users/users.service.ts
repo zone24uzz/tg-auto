@@ -44,7 +44,7 @@ export class UsersService {
   }
 
   async byTelegramId(telegramUserId: bigint): Promise<UserSummary | null> {
-    const user = await this.db.telegramUser.findUnique({ where: { telegramUserId } });
+    const user = await this.db.telegramUser.findFirst({ where: { telegramUserId } });
     if (!user) return null;
     return { user, mode: await this.rules.userMode(telegramUserId) };
   }
@@ -59,7 +59,7 @@ export class UsersService {
 
   async setTags(telegramUserId: bigint, tags: string[], adminTelegramUserId: bigint): Promise<string[]> {
     const clean = [...new Set(tags.map((t) => normalizeTag(t)).filter((t): t is string => !!t))].slice(0, 10);
-    await this.db.telegramUser.update({ where: { telegramUserId }, data: { tags: clean } });
+    await this.db.telegramUser.updateMany({ where: { telegramUserId }, data: { tags: clean } });
     this.rules.invalidate();
     await this.audit.record(adminTelegramUserId, 'USER_RULE_CHANGED', `tags:${telegramUserId}`, { tags: clean.join(',') });
     return clean;

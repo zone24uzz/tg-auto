@@ -3,17 +3,19 @@ import pg from 'pg';
 import { PrismaClient } from '../generated/prisma/client.js';
 import { childLogger } from '../logging/logger.js';
 import { describeError } from '../logging/sanitize.js';
+import { tenancyExtension } from '../tenancy/scoped-db.js';
 
 const log = childLogger('database');
 
-export type Db = PrismaClient;
+/** Prisma client with tenant isolation applied to every model query (see src/tenancy/scoped-db.ts). */
+export type Db = ReturnType<typeof createDb>;
 
 /**
  * Prisma stores DateTime values as UTC in `timestamp without time zone` columns. Raw SQL that uses
  * `now()` (job queue, leases) must see the same clock, so every connection runs in UTC — otherwise a
  * server configured for a local zone (e.g. Asia/Tashkent, +5 h) shifts delayed jobs and chat leases.
  */
-export function createDb(databaseUrl: string): Db {
+export function createDb(databaseUrl: string) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
   pool.on('connect', (client) => {
     client.query("SET TIME ZONE 'UTC'").catch(() => undefined);
@@ -25,7 +27,7 @@ export function createDb(databaseUrl: string): Db {
     log.warn({ error: describeError(error) }, 'idle database connection closed; it will be re-established');
   });
   const adapter = new PrismaPg(pool);
-  return new PrismaClient({ adapter });
+  return new PrismaClient({ adapter }).$extends(tenancyExtension);
 }
 
 /**

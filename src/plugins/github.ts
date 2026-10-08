@@ -21,9 +21,13 @@ export async function executeGithubTool(name: string, args: Record<string, unkno
   if (!token) return 'Error: GITHUB_TOKEN is not configured.';
 
   if (name === 'add_github_collaborator') {
-    const repo = args.repo as string;
-    const username = args.username as string;
-    const permission = (args.permission as string) || 'push';
+    const repo = String(args.repo ?? '');
+    const username = String(args.username ?? '');
+    const permission = String(args.permission || 'push');
+    // Model output is untrusted: only plain repo / user names and known permissions reach the API path.
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo) || repo.startsWith('.')) return 'Error: invalid repository name.';
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(username)) return 'Error: invalid GitHub username.';
+    if (!['pull', 'push', 'admin', 'maintain', 'triage'].includes(permission)) return 'Error: invalid permission.';
     
     // We assume the token's owner is the repo owner for simplicity, or we can fetch the owner
     try {
@@ -35,7 +39,7 @@ export async function executeGithubTool(name: string, args: Record<string, unkno
       const user = (await userRes.json()) as { login: string };
       const owner = user.login;
 
-      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/collaborators/${username}`, {
+      const res = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(username)}`, {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${token}`,

@@ -1,10 +1,12 @@
 import type { Context } from 'grammy';
 import type { Settings } from '../../../settings/schema.js';
+import type { AccessGroup } from '../../../tenancy/access.service.js';
 import { escapeHtml } from '../../common/html.js';
 import { cb, parseCb, ROUTES } from '../callback-data.js';
 import { adminIdOf, type AdminKit } from '../kit.js';
 import { CANCEL, Kb, NOP, btn, setNotice, show, type View } from '../ui.js';
 import { isPaused, statusLine } from './auto-reply.js';
+import { accessMenuButtons, isSuperAdmin } from './access.js';
 
 export interface MainData {
   settings: Settings;
@@ -12,6 +14,8 @@ export interface MainData {
   costToday: number;
   now: Date;
   timezone: string;
+  /** Super-admin only: Access request counts. */
+  access?: Record<AccessGroup, number>;
 }
 
 const money = (n: number): string => `$${n.toFixed(2)}`;
@@ -56,7 +60,10 @@ export function buildMainMenu(d: MainData): View {
     btn('📜 Logs', cb('lg', 0)),
     btn('🔐 Privacy', 'pv'),
   ];
-  return { text, keyboard: new Kb().grid(buttons, 2).build() };
+  const kb = new Kb();
+  // Super-admin only: who may use the bot (pending / approved / declined requests).
+  if (d.access) kb.row(...accessMenuButtons(d.access));
+  return { text, keyboard: kb.grid(buttons, 2).build() };
 }
 
 export interface StatusData extends MainData {
@@ -102,17 +109,18 @@ export function buildHelp(ownerName: string): View {
   return { text, keyboard: new Kb().back().build() };
 }
 
-async function loadMain(kit: AdminKit): Promise<MainData> {
-  const [settings, pending, costToday] = await Promise.all([
+async function loadMain(kit: AdminKit, ctx?: Context): Promise<MainData> {
+  const [settings, pending, costToday, access] = await Promise.all([
     kit.deps.settings.get(),
     kit.deps.attention.countPending(),
     kit.deps.usage.costToday(),
+    kit.deps.access && ctx && isSuperAdmin(kit, ctx) ? kit.deps.access.counts() : Promise.resolve(undefined),
   ]);
-  return { settings, pending, costToday, now: new Date(), timezone: kit.deps.timezone };
+  return { settings, pending, costToday, now: new Date(), timezone: kit.deps.timezone, ...(access ? { access } : {}) };
 }
 
 export async function showMainMenu(kit: AdminKit, ctx: Context, opts: { fresh?: boolean } = {}): Promise<void> {
-  await show(ctx, buildMainMenu(await loadMain(kit)), opts);
+  await show(ctx, buildMainMenu(await loadMain(kit, ctx)), opts);
 }
 
 export async function showStatus(kit: AdminKit, ctx: Context): Promise<void> {

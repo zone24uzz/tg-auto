@@ -3,6 +3,9 @@ import { Bot, type Composer, type Context } from 'grammy';
 import type { Db } from '../../database/client.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
+import { tenantScope } from '../../tenancy/bot-scope.js';
+import { currentTenantOrNull } from '../../tenancy/context.js';
+import type { TenantService } from '../../tenancy/tenant.service.js';
 import { idempotency } from '../common/update-guard.js';
 import type { BusinessHandlers } from './business.handlers.js';
 import type { ConnectionService } from './connection.service.js';
@@ -37,22 +40,31 @@ export function configureMainBot(p: {
   db: Db;
   business: BusinessHandlers;
   connections: ConnectionService;
+  tenants: TenantService;
   admin?: Composer<Context>;
 }): void {
   const { bot } = p;
   bot.use(idempotency(p.db, 'main'));
+  // Everything below runs in the update's workspace (tenant) scope.
+  bot.use(tenantScope({ db: p.db, tenants: p.tenants, api: bot.api }));
 
+  // Business updates of accounts without an active workspace are dropped here (nothing is stored).
+  const inWorkspace = (what: string): boolean => {
+    if (currentTenantOrNull()) return true;
+    log.warn({ update: what }, 'business update of an account without an active workspace ignored');
+    return false;
+  };
   bot.on('business_connection', async (ctx) => {
-    await p.connections.upsertFromUpdate(ctx.businessConnection);
+    if (inWorkspace('business_connection')) await p.connections.upsertFromUpdate(ctx.businessConnection);
   });
   bot.on('business_message', async (ctx) => {
-    await p.business.onMessage(ctx.businessMessage);
+    if (inWorkspace('business_message')) await p.business.onMessage(ctx.businessMessage);
   });
   bot.on('edited_business_message', async (ctx) => {
-    await p.business.onEdited(ctx.editedBusinessMessage);
+    if (inWorkspace('edited_business_message')) await p.business.onEdited(ctx.editedBusinessMessage);
   });
   bot.on('deleted_business_messages', async (ctx) => {
-    await p.business.onDeleted(ctx.deletedBusinessMessages);
+    if (inWorkspace('deleted_business_messages')) await p.business.onDeleted(ctx.deletedBusinessMessages);
   });
 
   if (p.admin) bot.use(p.admin);
@@ -67,8 +79,9 @@ export function configureMainBot(p: {
   });
 }
 
-export function configureAdminBot(bot: Bot, db: Db, admin: Composer<Context>): void {
+export function configureAdminBot(bot: Bot, db: Db, admin: Composer<Context>, tenants: TenantService): void {
   bot.use(idempotency(db, 'admin'));
+  bot.use(tenantScope({ db, tenants }));
   bot.use(admin);
   bot.chatType('private').command('start', async (ctx) => {
     await ctx.reply('Bu shaxsiy bot.');

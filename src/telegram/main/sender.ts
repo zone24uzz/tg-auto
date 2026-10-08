@@ -1,6 +1,7 @@
 import { GrammyError, InputFile, type Api } from 'grammy';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
+import { currentTenant } from '../../tenancy/context.js';
 
 const log = childLogger('sender');
 
@@ -37,27 +38,30 @@ export interface UserbotTransport {
  * or, for `userbot:` connections, via the owner's own MTProto session.
  */
 export class TelegramSender {
-  private userbot: UserbotTransport | null = null;
+  /** Userbot transports by connection id (`userbot:<ownerUserId>`), one per connected workspace. */
+  private readonly userbots = new Map<string, UserbotTransport>();
 
   constructor(private readonly api: Api) {}
 
   /** Attached at startup when TELEGRAM_TRANSPORT=userbot and the session is authorized. */
-  setUserbotTransport(transport: UserbotTransport | null): void {
-    this.userbot = transport;
+  setUserbotTransport(ownerUserId: bigint, transport: UserbotTransport | null): void {
+    if (transport) this.userbots.set(`userbot:${ownerUserId}`, transport);
+    else this.userbots.delete(`userbot:${ownerUserId}`);
   }
 
   /** Sends a new message from the owner's own account (userbot only; used by the owner's assistant). */
   sendAsOwner(chatId: bigint, text: string): Promise<number> {
-    return this.requireUserbot().sendText(chatId, text);
+    return this.requireUserbot(`userbot:${currentTenant('send as owner').ownerTelegramUserId}`).sendText(chatId, text);
   }
 
-  private requireUserbot(): UserbotTransport {
-    if (!this.userbot) throw new SendError('userbot transport is not connected (login required)', true);
-    return this.userbot;
+  private requireUserbot(connectionId: string): UserbotTransport {
+    const transport = this.userbots.get(connectionId);
+    if (!transport) throw new SendError('userbot transport is not connected (login required)', true);
+    return transport;
   }
 
   async sendText(p: { connectionId: string; chatId: bigint; text: string; replyTo?: number }): Promise<number> {
-    if (isUserbotConnection(p.connectionId)) return this.requireUserbot().sendText(p.chatId, p.text, p.replyTo);
+    if (isUserbotConnection(p.connectionId)) return this.requireUserbot(p.connectionId).sendText(p.chatId, p.text, p.replyTo);
     try {
       const sent = await this.api.sendMessage(Number(p.chatId), p.text, {
         business_connection_id: p.connectionId,
@@ -71,7 +75,7 @@ export class TelegramSender {
   }
 
   async sendVoice(p: { connectionId: string; chatId: bigint; ogg: Buffer; replyTo?: number }): Promise<number> {
-    if (isUserbotConnection(p.connectionId)) return this.requireUserbot().sendVoice(p.chatId, p.ogg, p.replyTo);
+    if (isUserbotConnection(p.connectionId)) return this.requireUserbot(p.connectionId).sendVoice(p.chatId, p.ogg, p.replyTo);
     try {
       const sent = await this.api.sendVoice(Number(p.chatId), new InputFile(p.ogg, 'reply.ogg'), {
         business_connection_id: p.connectionId,
@@ -87,7 +91,7 @@ export class TelegramSender {
   async typing(connectionId: string, chatId: bigint, action: 'typing' | 'record_voice' = 'typing'): Promise<void> {
     try {
       if (isUserbotConnection(connectionId)) {
-        await this.userbot?.typing(chatId, action);
+        await this.userbots.get(connectionId)?.typing(chatId, action);
         return;
       }
       await this.api.sendChatAction(Number(chatId), action, { business_connection_id: connectionId });

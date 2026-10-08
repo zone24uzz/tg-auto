@@ -2,6 +2,7 @@ import { InlineKeyboard, type Api } from 'grammy';
 import type { EventLog } from '../../logging/events.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
+import { currentTenantOrNull } from '../../tenancy/context.js';
 import { formatTime } from '../../utils/time.js';
 import { clampMessage, quote } from '../common/html.js';
 import { cb, ROUTES } from './callback-data.js';
@@ -34,16 +35,21 @@ export function reasonLabel(reason: string): string {
 }
 
 /**
- * Sends owner-facing notifications through the admin bot (or the main bot in single-bot mode).
+ * Sends owner-facing notifications through the admin bot (or the main bot in single-bot mode) to the
+ * CURRENT tenant's owner; outside a tenant scope (system work) they go to the super-admin.
  * All untrusted content is HTML-escaped. Failures are logged, never thrown.
  */
 export class AdminNotifier {
   constructor(
     private readonly api: Api,
-    private readonly adminChatId: bigint,
+    private readonly superAdminChatId: bigint,
     private readonly timezone: string,
     private readonly events?: EventLog,
   ) {}
+
+  private get adminChatId(): bigint {
+    return currentTenantOrNull()?.ownerTelegramUserId ?? this.superAdminChatId;
+  }
 
   private async send(html: string, keyboard?: InlineKeyboard): Promise<number | undefined> {
     try {

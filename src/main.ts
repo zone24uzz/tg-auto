@@ -1,11 +1,14 @@
 import type { Server } from 'node:http';
 import { Composer, type Context } from 'grammy';
-import type { UserbotRuntime } from './app/userbot-contract.js';
+import type { UserbotManager } from './telegram/userbot/manager.js';
 import { buildContainer } from './app/container.js';
 import { buildWorker, startScheduler } from './app/jobs.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { pingDb, waitForDb } from './database/client.js';
 import { logger } from './logging/logger.js';
+import { Onboarding } from './onboarding/onboarding.js';
+import { AccessService } from './tenancy/access.service.js';
+import { runAsSystem } from './tenancy/context.js';
 import { describeError } from './logging/sanitize.js';
 import { publishAdminCommands } from './telegram/admin/commands-menu.js';
 import { createAdminComposer } from './telegram/admin/index.js';
@@ -17,10 +20,73 @@ async function main(): Promise<void> {
   const c = buildContainer(env);
 
   if (!(await waitForDb(c.db))) throw new Error('Database is not reachable (check DATABASE_URL and run migrations)');
-  await c.db.admin.upsert({
-    where: { telegramUserId: env.ADMIN_TELEGRAM_USER_ID },
-    create: { telegramUserId: env.ADMIN_TELEGRAM_USER_ID },
-    update: {},
+  // The super-admin (ADMIN_TELEGRAM_USER_ID) always owns an active workspace.
+  await c.tenants.ensureSuperAdmin(env.ADMIN_TELEGRAM_USER_ID);
+  const adminApi = (c.adminBot ?? c.mainBot).api;
+  const isUserbot = env.TELEGRAM_TRANSPORT === 'userbot';
+
+  if (!c.cipher.enabled) {
+    logger.warn('DATA_ENCRYPTION_KEY is not set: message content is stored UNENCRYPTED. Set it before going live.');
+    await runAsSystem(() => c.events.warn('app', 'encryption at rest is OFF (DATA_ENCRYPTION_KEY missing)'));
+  }
+
+  // Userbot (MTProto) transport: every workspace connects its own account (/login).
+  let userbots: UserbotManager | null = null;
+  if (isUserbot) {
+    const [{ createUserbotRuntime }, { UserbotManager: Manager }] = await Promise.all([
+      import('./telegram/userbot/index.js'),
+      import('./telegram/userbot/manager.js'),
+    ]);
+    userbots = new Manager({
+      base: {
+        db: c.db,
+        cipher: c.cipher,
+        apiId: Number(env.TELEGRAM_API_ID),
+        apiHash: env.TELEGRAM_API_HASH!,
+        mtproto: { port: env.MTPROTO_PORT === '80' ? 80 : 443, obfuscated: env.MTPROTO_OBFUSCATED },
+        tmpDir: env.MEDIA_TMP_DIR,
+        business: c.business,
+        connections: c.connections,
+        notifier: c.notifier,
+        events: c.events,
+      },
+      ...(env.TELEGRAM_SESSION ? { envSession: env.TELEGRAM_SESSION } : {}),
+      superAdminId: env.ADMIN_TELEGRAM_USER_ID,
+      tenants: c.tenants,
+      create: createUserbotRuntime,
+      setTransport: (owner, transport) => c.sender.setUserbotTransport(owner, transport),
+      onPresence: (userId, state) => c.assistant.onPresence(userId, state),
+    });
+    const manager = userbots;
+    c.downloader.setUserbotDownloader(manager.downloader);
+    c.assistant.attachUserbot(() => manager.assistantApi());
+  }
+
+  // The owner's "/" command menu, (re)published per workspace owner so it always matches the code.
+  const publishMenu = (ownerId: bigint) =>
+    publishAdminCommands(adminApi, ownerId, { userbot: isUserbot }).catch((error: unknown) =>
+      logger.warn({ err: error }, 'could not publish the admin command menu'),
+    );
+
+  const access = new AccessService({
+    db: c.db,
+    api: adminApi,
+    tenants: c.tenants,
+    settings: c.settings,
+    superAdminId: env.ADMIN_TELEGRAM_USER_ID,
+    maxTenants: env.MAX_TENANTS,
+    onApproved: (tenant) => publishMenu(tenant.telegramUserId),
+    onRevoked: async (tenant) => {
+      await userbots?.stop(tenant.id);
+    },
+  });
+  const onboarding = new Onboarding({
+    db: c.db,
+    api: adminApi,
+    tenants: c.tenants,
+    cipher: c.cipher,
+    superAdminId: env.ADMIN_TELEGRAM_USER_ID,
+    keyEnv: env,
   });
 
   const admin = createAdminComposer({
@@ -45,41 +111,12 @@ async function main(): Promise<void> {
     connections: c.connections,
     cleanup: c.cleanup,
     assistant: c.assistant,
+    access,
+    onboarding,
   });
 
-  if (!c.cipher.enabled) {
-    logger.warn('DATA_ENCRYPTION_KEY is not set: message content is stored UNENCRYPTED. Set it before going live.');
-    await c.events.warn('app', 'encryption at rest is OFF (DATA_ENCRYPTION_KEY missing)');
-  }
-
-  // Userbot (MTProto) transport: the owner's own account receives and sends the messages.
-  let userbot: UserbotRuntime | null = null;
-  if (env.TELEGRAM_TRANSPORT === 'userbot') {
-    const { createUserbotRuntime } = await import('./telegram/userbot/index.js');
-    userbot = createUserbotRuntime({
-      db: c.db,
-      cipher: c.cipher,
-      apiId: Number(env.TELEGRAM_API_ID),
-      apiHash: env.TELEGRAM_API_HASH!,
-      mtproto: { port: env.MTPROTO_PORT === '80' ? 80 : 443, obfuscated: env.MTPROTO_OBFUSCATED },
-      ...(env.TELEGRAM_SESSION ? { envSession: env.TELEGRAM_SESSION } : {}),
-      adminTelegramUserId: env.ADMIN_TELEGRAM_USER_ID,
-      tmpDir: env.MEDIA_TMP_DIR,
-      business: c.business,
-      connections: c.connections,
-      notifier: c.notifier,
-      events: c.events,
-      onReady: (transport) => c.sender.setUserbotTransport(transport),
-      onLoggedOut: () => c.sender.setUserbotTransport(null),
-      onPresence: (userId, state) => {
-        c.assistant.onPresence(userId, state).catch((error: unknown) => logger.warn({ err: error }, 'assistant presence handler failed'));
-      },
-    });
-    c.downloader.setUserbotDownloader(userbot.downloader);
-    c.assistant.attachUserbot(userbot.assistantApi);
-  }
   const adminStack = new Composer<Context>();
-  if (userbot) adminStack.use(userbot.composer);
+  if (userbots) adminStack.use(userbots.composer);
   adminStack.use(admin);
 
   configureMainBot({
@@ -87,16 +124,18 @@ async function main(): Promise<void> {
     db: c.db,
     business: c.business,
     connections: c.connections,
+    tenants: c.tenants,
     ...(c.adminBot ? {} : { admin: adminStack }),
   });
-  if (c.adminBot) configureAdminBot(c.adminBot, c.db, adminStack);
+  if (c.adminBot) configureAdminBot(c.adminBot, c.db, adminStack, c.tenants);
 
   await c.mainBot.init();
   await c.adminBot?.init();
-  // The owner's "/" command menu, re-published on every start so it always matches the code.
-  await publishAdminCommands((c.adminBot ?? c.mainBot).api, env.ADMIN_TELEGRAM_USER_ID, { userbot: env.TELEGRAM_TRANSPORT === 'userbot' }).catch((error: unknown) =>
-    logger.warn({ err: error }, 'could not publish the admin command menu'),
-  );
+  // Strangers see only /start (it opens onboarding); every workspace owner gets the full menu.
+  await adminApi
+    .setMyCommands([{ command: 'start', description: 'Boshlash · Начать · Start' }])
+    .catch((error: unknown) => logger.warn({ err: error }, 'could not publish the default command menu'));
+  for (const tenant of await c.tenants.listActive()) await publishMenu(tenant.telegramUserId);
   if (env.TELEGRAM_TRANSPORT === 'business' && !c.mainBot.botInfo.can_connect_to_business) {
     logger.warn(
       'Business Mode is OFF for this bot. Enable it in @BotFather → /mybots → Bot Settings → Business Mode, then connect the bot in Telegram → Settings → Telegram Business → Chatbots.',
@@ -140,8 +179,8 @@ async function main(): Promise<void> {
         onStart: (info) => logger.info({ bot: info.username }, 'admin bot polling'),
       });
   }
-  await userbot?.start();
-  await c.events.info('app', `started (${env.TELEGRAM_TRANSPORT}, ${env.TELEGRAM_UPDATE_MODE}, worker=${env.WORKER_MODE})`);
+  await userbots?.startAll();
+  await runAsSystem(() => c.events.info('app', `started (${env.TELEGRAM_TRANSPORT}, ${env.TELEGRAM_UPDATE_MODE}, worker=${env.WORKER_MODE})`));
 
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -154,7 +193,7 @@ async function main(): Promise<void> {
         await c.adminBot?.stop();
       }
       server?.close();
-      await userbot?.stop();
+      await userbots?.stopAll();
       stopScheduler();
       await worker?.stop();
       await c.db.$disconnect();

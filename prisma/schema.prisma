@@ -15,8 +15,11 @@ datasource db {
 
 // ───────────────────────────── enums ─────────────────────────────
 
-enum AdminRole {
-  OWNER
+enum TenantStatus {
+  PENDING // asked for access, waiting for the super-admin
+  ACTIVE
+  REJECTED
+  SUSPENDED
 }
 
 enum UserMode {
@@ -161,13 +164,28 @@ enum EventLevel {
 
 // ───────────────────────────── admin / connection ─────────────────────────────
 
-model Admin {
-  id             Int       @id @default(autoincrement())
-  telegramUserId BigInt    @unique
-  role           AdminRole @default(OWNER)
-  createdAt      DateTime  @default(now())
+/// A workspace: one Telegram account owner with their own settings, rules, history, AI key and session.
+model Tenant {
+  id             Int          @id @default(autoincrement())
+  /// The owner's Telegram user id (taken from /start).
+  telegramUserId BigInt       @unique
+  username       String?
+  firstName      String?
+  status         TenantStatus @default(PENDING)
+  /// UI language: uz | ru | en
+  language       String       @default("uz")
+  /// Chosen AI provider (gemini | openai | anthropic) and its API key (ContentCipher ciphertext).
+  aiProvider     String?
+  aiApiKey       String?
+  /// Onboarding step while the tenant is being set up (null when finished).
+  onboardingStep String?
+  consentAt      DateTime?
+  approvedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  @@map("admins")
+  @@index([status])
+  @@map("tenants")
 }
 
 /// Pending multi-step input of the admin (e.g. "send the new prompt").
@@ -183,7 +201,8 @@ model AdminState {
 
 /// Encrypted MTProto StringSession of the owner's account (userbot transport).
 model UserbotSession {
-  id          String   @id @default("default")
+  /// One MTProto session per tenant.
+  tenantId    Int      @id @default(0)
   session     String // ContentCipher ciphertext — full account access, never log it
   ownerUserId BigInt
   createdAt   DateTime @default(now())
@@ -195,11 +214,12 @@ model UserbotSession {
 /// Telegram Business connection (business_connection update).
 model TelegramConnection {
   id          String   @id // business_connection_id
+  tenantId    Int      @default(0)
   ownerUserId BigInt
   userChatId  BigInt
   isEnabled   Boolean  @default(true)
   canReply    Boolean  @default(false)
-  authorized  Boolean  @default(false) // owner == ADMIN_TELEGRAM_USER_ID
+  authorized  Boolean  @default(false) // owner is an active tenant
   rights      Json?
   connectedAt DateTime
   updatedAt   DateTime @updatedAt
@@ -207,6 +227,7 @@ model TelegramConnection {
 
   chats Chat[]
 
+  @@index([tenantId])
   @@map("telegram_connections")
 }
 
@@ -214,7 +235,8 @@ model TelegramConnection {
 
 model TelegramUser {
   id             Int       @id @default(autoincrement())
-  telegramUserId BigInt    @unique
+  tenantId       Int       @default(0)
+  telegramUserId BigInt
   username       String?
   firstName      String?
   lastName       String?
@@ -234,13 +256,15 @@ model TelegramUser {
   messages Message[]
   chats    Chat[]
 
-  @@index([username])
-  @@index([lastMessageAt])
+  @@unique([tenantId, telegramUserId])
+  @@index([tenantId, username])
+  @@index([tenantId, lastMessageAt])
   @@map("users")
 }
 
 model Chat {
   id                 Int       @id @default(autoincrement())
+  tenantId           Int       @default(0)
   connectionId       String
   telegramChatId     BigInt
   type               String    @default("private")
@@ -264,7 +288,7 @@ model Chat {
   responses  AiResponse[]
 
   @@unique([connectionId, telegramChatId])
-  @@index([telegramChatId])
+  @@index([tenantId, telegramChatId])
   @@map("chats")
 }
 
@@ -272,6 +296,7 @@ model Chat {
 
 model Message {
   id                       Int              @id @default(autoincrement())
+  tenantId                 Int              @default(0)
   chatId                   Int
   senderId                 Int?
   telegramMessageId        Int
@@ -307,6 +332,7 @@ model Message {
   @@index([chatId, telegramDate])
   @@index([senderId, createdAt])
   @@index([createdAt])
+  @@index([tenantId, createdAt])
   @@index([status])
   @@index([deletedAt])
   @@map("messages")
@@ -361,6 +387,7 @@ model Media {
 
 model AiResponse {
   id                    Int            @id @default(autoincrement())
+  tenantId              Int            @default(0)
   sourceMessageId       Int
   chatId                Int
   kind                  ResponseKind
@@ -385,6 +412,7 @@ model AiResponse {
   @@unique([sourceMessageId, kind])
   @@index([chatId, createdAt])
   @@index([createdAt])
+  @@index([tenantId, createdAt])
   @@map("ai_responses")
 }
 
@@ -403,6 +431,7 @@ model ConversationSummary {
 
 model UsageStat {
   id           Int      @id @default(autoincrement())
+  tenantId     Int      @default(0)
   provider     String
   model        String
   operation    String // TEXT | CLASSIFY | VISION | TRANSCRIBE | VIDEO | SUMMARY | TTS
@@ -417,6 +446,7 @@ model UsageStat {
   createdAt    DateTime @default(now())
 
   @@index([createdAt])
+  @@index([tenantId, createdAt])
   @@index([provider, model])
   @@map("usage_stats")
 }
@@ -425,6 +455,7 @@ model UsageStat {
 
 model UserRule {
   id         Int           @id @default(autoincrement())
+  tenantId   Int           @default(0)
   matchType  RuleMatchType
   matchValue String // normalized: numeric id as string, lowercase username without @, tag lowercase
   mode       UserMode
@@ -432,22 +463,25 @@ model UserRule {
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
 
-  @@unique([matchType, matchValue])
-  @@index([mode])
+  @@unique([tenantId, matchType, matchValue])
+  @@index([tenantId, mode])
   @@map("user_rules")
 }
 
 model Setting {
-  key       String   @id
+  tenantId  Int      @default(0)
+  key       String
   value     Json
   updatedBy BigInt?
   updatedAt DateTime @updatedAt
 
+  @@id([tenantId, key])
   @@map("settings")
 }
 
 model Prompt {
   id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(0)
   kind      String   @default("SYSTEM")
   version   Int
   content   String
@@ -455,8 +489,8 @@ model Prompt {
   createdBy BigInt?
   createdAt DateTime @default(now())
 
-  @@unique([kind, version])
-  @@index([kind, isActive])
+  @@unique([tenantId, kind, version])
+  @@index([tenantId, kind, isActive])
   @@map("prompts")
 }
 
@@ -464,6 +498,7 @@ model Prompt {
 
 model OwnerAttention {
   id                         Int             @id @default(autoincrement())
+  tenantId                   Int             @default(0)
   messageId                  Int             @unique
   chatId                     Int
   reason                     String
@@ -479,12 +514,14 @@ model OwnerAttention {
   chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([tenantId, status, createdAt])
   @@index([chatId, status])
   @@map("owner_attention")
 }
 
 model AuditLog {
   id                  Int         @id @default(autoincrement())
+  tenantId            Int         @default(0)
   adminTelegramUserId BigInt
   action              AuditAction
   target              String?
@@ -492,17 +529,21 @@ model AuditLog {
   createdAt           DateTime    @default(now())
 
   @@index([createdAt])
+  @@index([tenantId, createdAt])
   @@map("audit_logs")
 }
 
 model SystemEvent {
   id        Int        @id @default(autoincrement())
+  /// null = system-wide event (no tenant context).
+  tenantId  Int?
   level     EventLevel
   source    String
   message   String // sanitized, never contains secrets or message content
   createdAt DateTime   @default(now())
 
   @@index([createdAt])
+  @@index([tenantId, createdAt])
   @@map("system_events")
 }
 
@@ -553,6 +594,7 @@ enum AssistantTaskKind {
 /// Tasks the owner gives the assistant in the admin chat ("Firdavs online bo'lsa xabar ber").
 model AssistantTask {
   id                   Int               @id @default(autoincrement())
+  tenantId             Int               @default(0)
   kind                 AssistantTaskKind
   targetTelegramUserId BigInt?
   targetLabel          String?
@@ -572,7 +614,7 @@ model AssistantTask {
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  @@index([active, kind])
+  @@index([tenantId, active, kind])
   @@index([targetTelegramUserId])
   @@map("assistant_tasks")
 }

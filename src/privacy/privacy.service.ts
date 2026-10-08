@@ -50,7 +50,7 @@ export class PrivacyService {
 
   /** Deletes every stored message, media file, summary and profile of a contact. Rules are kept. */
   async deleteUserData(telegramUserId: bigint, adminTelegramUserId: bigint): Promise<{ messages: number; chats: number }> {
-    const user = await this.db.telegramUser.findUnique({ where: { telegramUserId } });
+    const user = await this.db.telegramUser.findFirst({ where: { telegramUserId } });
     const chats = await this.db.chat.findMany({
       where: { OR: [{ telegramChatId: telegramUserId }, ...(user ? [{ userId: user.id }] : [])] },
       select: { id: true },

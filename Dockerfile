@@ -30,6 +30,7 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY prisma ./prisma
 COPY prisma.config.ts ./
+COPY assets ./assets
 COPY scripts/docker-start.sh ./docker-start.sh
 RUN chmod +x ./docker-start.sh   && mkdir -p /app/data/tmp /app/data/storage && chown -R app:app /app/data
 USER app

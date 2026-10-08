@@ -152,7 +152,7 @@ export async function buildHarness(db: Db, opts: { settingsOverrides?: Record<st
   const replies = new ReplySender(db, repo, sender, cipher, events);
   const attention = new OwnerAttentionService(db, cipher, notifier, audit);
   const api = { getBusinessConnection: vi.fn(async () => Promise.reject(new Error('not found'))) } as unknown as Api;
-  const connections = new ConnectionService(db, api, OWNER_ID, notifier, events);
+  const connections = new ConnectionService(db, api, notifier, events);
   let media: MediaProcessor = fakeMedia();
   const mediaProxy: MediaProcessor = { processMessageMedia: (id) => media.processMessageMedia(id) };
   const pipeline = new ReplyPipeline({

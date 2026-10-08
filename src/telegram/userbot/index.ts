@@ -73,7 +73,7 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     this.adminTelegramUserId = deps.adminTelegramUserId;
     this.store = new SessionStore(deps.db, deps.cipher, deps.envSession);
     const peers = new PeerResolver(async (userId) => {
-      const row = await deps.db.telegramUser.findUnique({ where: { telegramUserId: userId }, select: { accessHash: true } });
+      const row = await deps.db.telegramUser.findFirst({ where: { telegramUserId: userId }, select: { accessHash: true } });
       return row?.accessHash ?? null;
     });
     const getClient = () => (this.state.state === 'ready' ? (this.bundle?.client ?? null) : null);
@@ -215,11 +215,18 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     await this.deps.connections.ensureUserbotConnection(meId);
     this.bundle = bundle;
     this.source = source;
+    // MTProto events arrive outside any request: run each one in this workspace's tenant scope.
+    const scope = this.deps.runInScope ?? (<T>(fn: () => Promise<T>) => fn());
+    const business = this.deps.business;
     const eventContext = {
       client: bundle.client,
       connectionId: `userbot:${meId}`,
       owner: { id: meId, sender: owner },
-      business: this.deps.business,
+      business: {
+        handleIncoming: (msg: Parameters<typeof business.handleIncoming>[0]) => scope(() => business.handleIncoming(msg)),
+        handleEdit: (msg: Parameters<typeof business.handleEdit>[0]) => scope(() => business.handleEdit(msg)),
+        handleDeletedIds: (connectionId: string, ids: number[]) => scope(() => business.handleDeletedIds(connectionId, ids)),
+      },
       transport: this.transport,
     };
     const unregisterEvents = registerEventHandlers(eventContext);
@@ -244,8 +251,8 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     // The login flow tells the owner itself; on startup the admin is warned here.
     if (source !== 'login' && meId !== this.adminTelegramUserId)
       await this.deps.notifier.text(
-        `⚠️ Userbot ${escapeHtml(accountLabel(me))} (id ${meId}) akkauntiga ulandi, lekin ADMIN_TELEGRAM_USER_ID = ${this.adminTelegramUserId}. ` +
-          'Xabarlar e’tiborsiz qoldiriladi, toki ADMIN_TELEGRAM_USER_ID shu akkauntga mos kelmaguncha.',
+        `⚠️ Userbot ${escapeHtml(accountLabel(me))} (id ${meId}) akkauntiga ulandi, lekin bu ish maydonining egasi — id ${this.adminTelegramUserId}. ` +
+          'Xabarlar e’tiborsiz qoldiriladi: /logout qiling va o‘z akkauntingiz bilan /login qiling.',
       );
   }
 

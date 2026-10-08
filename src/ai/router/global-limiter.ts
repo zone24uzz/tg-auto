@@ -25,12 +25,39 @@ export class GlobalLimiter {
     return this.stamps.length - this.head;
   }
 
-  private evict(t: number): void {
+  protected evict(t: number): void {
     while (this.head < this.stamps.length && (this.stamps[this.head] ?? 0) <= t - WINDOW_MS) this.head++;
     // Compact occasionally so the array does not grow without bound.
     if (this.head > 1024 && this.head * 2 > this.stamps.length) {
       this.stamps = this.stamps.slice(this.head);
       this.head = 0;
     }
+  }
+}
+
+/** Per-workspace windows: each tenant's `globalAiRequestsPerMinute` applies to its own calls only. */
+export class TenantLimiter extends GlobalLimiter {
+  private readonly windows = new Map<number, GlobalLimiter>();
+
+  constructor(
+    private readonly tenantKey: () => number,
+    private readonly clock: () => number = Date.now,
+  ) {
+    super(clock);
+  }
+
+  private window(): GlobalLimiter {
+    const key = this.tenantKey();
+    let w = this.windows.get(key);
+    if (!w) this.windows.set(key, (w = new GlobalLimiter(this.clock)));
+    return w;
+  }
+
+  override tryAcquire(limitPerMinute: number): boolean {
+    return this.window().tryAcquire(limitPerMinute);
+  }
+
+  override inWindow(): number {
+    return this.window().inWindow();
   }
 }

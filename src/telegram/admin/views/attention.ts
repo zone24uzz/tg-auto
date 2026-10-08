@@ -6,6 +6,7 @@ import { cb, ROUTES } from '../callback-data.js';
 import { adminIdOf, ask, type AdminKit } from '../kit.js';
 import { reasonLabel } from '../notifier.js';
 import { Kb, NOP, btn, fit, intId, label, loadPage, pageArg, setNotice, show, type PageInfo, type View } from '../ui.js';
+import { isSuperAdmin } from './access.js';
 import { attentionStatusLabel } from './labels.js';
 
 const PER_PAGE = 6;
@@ -188,6 +189,9 @@ export function registerAttention(kit: AdminKit): void {
     if (item.status !== 'PENDING') return { text: RESOLVED, alert: true };
     const adminId = adminIdOf(kit, ctx);
     
+    // Tool approvals execute with the deployment's credentials: super-admin only.
+    if ((flag === 't1' || flag === 't2') && !isSuperAdmin(kit, ctx)) return { text: '⛔ Faqat bosh administrator uchun.', alert: true };
+
     if (flag === 't1') {
       // Step 1 approved. Move to Step 2.
       await kit.deps.db.ownerAttention.update({

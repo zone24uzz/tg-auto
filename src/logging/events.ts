@@ -1,4 +1,5 @@
 import type { Db } from '../database/client.js';
+import { currentTenantId, runAsSystem } from '../tenancy/context.js';
 import type { EventLevel } from '../generated/prisma/client.js';
 import { childLogger } from './logger.js';
 import { sanitizeText } from './sanitize.js';
@@ -34,7 +35,22 @@ export class EventLog {
     return this.record('ERROR', source, message);
   }
 
-  async recent(limit = 20, offset = 0, level?: EventLevel) {
+  /**
+   * The current workspace's events; with `includeSystem` (super-admin) also system-wide events
+   * (tenantId NULL), read in system scope with an explicit filter so other workspaces stay hidden.
+   */
+  async recent(limit = 20, offset = 0, level?: EventLevel, includeSystem = false) {
+    if (includeSystem) {
+      const tenantId = currentTenantId('events');
+      return runAsSystem(() =>
+        this.db.systemEvent.findMany({
+          where: { ...(level ? { level } : {}), OR: [{ tenantId }, { tenantId: null }] },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          skip: offset,
+        }),
+      );
+    }
     return this.db.systemEvent.findMany({
       where: level ? { level } : {},
       orderBy: { createdAt: 'desc' },

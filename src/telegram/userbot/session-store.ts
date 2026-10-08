@@ -1,8 +1,8 @@
 import type { Db } from '../../database/client.js';
+import { currentTenantId } from '../../tenancy/context.js';
 import { registerSecrets } from '../../logging/sanitize.js';
 import type { ContentCipher } from '../../security/crypto.js';
 
-const ROW_ID = 'default';
 /** ContentCipher.decrypt() placeholders for "no key" / "wrong key or corrupted". */
 const UNREADABLE = new Set(['[encrypted]', '[unreadable]']);
 
@@ -43,7 +43,7 @@ export class SessionStore {
 
   /** The decrypted DB session; `unreadable` when a row exists but cannot be decrypted (key changed/missing). */
   async loadDb(): Promise<{ session: string | null; unreadable: boolean }> {
-    const row = await this.db.userbotSession.findUnique({ where: { id: ROW_ID } });
+    const row = await this.db.userbotSession.findUnique({ where: { tenantId: currentTenantId('userbot session') } });
     if (!row) return { session: null, unreadable: false };
     const plain = this.cipher.decrypt(row.session);
     if (!plain || UNREADABLE.has(plain)) return { session: null, unreadable: true };
@@ -57,14 +57,14 @@ export class SessionStore {
     if (!this.cipher.enabled) return false;
     const encrypted = this.cipher.encrypt(session);
     await this.db.userbotSession.upsert({
-      where: { id: ROW_ID },
-      create: { id: ROW_ID, session: encrypted, ownerUserId },
+      where: { tenantId: currentTenantId('userbot session') },
+      create: { session: encrypted, ownerUserId },
       update: { session: encrypted, ownerUserId },
     });
     return true;
   }
 
   async clear(): Promise<void> {
-    await this.db.userbotSession.deleteMany({ where: { id: ROW_ID } });
+    await this.db.userbotSession.deleteMany({ where: { tenantId: currentTenantId('userbot session') } });
   }
 }

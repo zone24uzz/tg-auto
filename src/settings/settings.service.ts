@@ -1,5 +1,6 @@
 import type { AuditService } from '../audit/audit.service.js';
 import type { Db } from '../database/client.js';
+import { currentTenantId } from '../tenancy/context.js';
 import type { AuditAction } from '../generated/prisma/client.js';
 import { childLogger } from '../logging/logger.js';
 import { SETTING_KEYS, settingsShape, type SettingKey, type Settings } from './schema.js';
@@ -51,7 +52,8 @@ function auditActionFor(key: SettingKey, value: unknown): AuditAction {
  * a separate worker process sees changes within CACHE_TTL_MS.
  */
 export class SettingsService {
-  private cache: { value: Settings; at: number } | null = null;
+  /** Per-tenant cache (settings are a workspace's own; reading them needs a tenant scope). */
+  private readonly cache = new Map<number, { value: Settings; at: number }>();
 
   constructor(
     private readonly db: Db,
@@ -64,7 +66,9 @@ export class SettingsService {
   }
 
   async get(): Promise<Settings> {
-    if (this.cache && Date.now() - this.cache.at < CACHE_TTL_MS) return this.cache.value;
+    const tenantId = currentTenantId('settings');
+    const hit = this.cache.get(tenantId);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
     const rows = await this.db.setting.findMany();
     const merged: Record<string, unknown> = { ...this.defaults };
     for (const row of rows) {
@@ -75,12 +79,12 @@ export class SettingsService {
       else log.warn({ key }, 'stored setting is invalid; using default');
     }
     const value = merged as Settings;
-    this.cache = { value, at: Date.now() };
+    this.cache.set(tenantId, { value, at: Date.now() });
     return value;
   }
 
   invalidate(): void {
-    this.cache = null;
+    this.cache.clear();
   }
 
   validate<K extends SettingKey>(key: K, value: unknown): Settings[K] {
@@ -97,7 +101,7 @@ export class SettingsService {
     const valid = this.validate(key, value);
     const before = (await this.get())[key];
     await this.db.setting.upsert({
-      where: { key },
+      where: { tenantId_key: { tenantId: currentTenantId(), key } },
       create: { key, value: valid as never, updatedBy: adminTelegramUserId ?? null },
       update: { value: valid as never, updatedBy: adminTelegramUserId ?? null },
     });

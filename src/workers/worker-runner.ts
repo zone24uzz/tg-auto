@@ -40,6 +40,8 @@ export class WorkerRunner {
     private readonly queues: QueueConfig[],
     private readonly handlers: Record<string, JobHandler>,
     private readonly onJobError?: (job: Job, error: string, dead: boolean) => Promise<void>,
+    /** Runs each job (handler + error hook) in a scope, e.g. the tenant that enqueued it. */
+    private readonly scope: (job: Job, fn: () => Promise<void>) => Promise<void> = (_job, fn) => fn(),
   ) {}
 
   start(): void {
@@ -94,6 +96,15 @@ export class WorkerRunner {
   }
 
   private async run(job: Job): Promise<void> {
+    try {
+      await this.scope(job, () => this.runScoped(job));
+    } catch (error) {
+      // Scope resolution itself failed (DB down…): leave the job for recoverStale.
+      log.error({ jobId: job.id, error: describeError(error) }, 'could not run job in its scope');
+    }
+  }
+
+  private async runScoped(job: Job): Promise<void> {
     const handler = this.handlers[job.type];
     if (!handler) {
       await this.queue.fail(job, `no handler for ${job.type}`, false);

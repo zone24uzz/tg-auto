@@ -1,6 +1,7 @@
 import type { Context } from 'grammy';
 import type { ModelInfo, ProviderId } from '../../../ai/types.js';
 import type { SettingKey, Settings } from '../../../settings/schema.js';
+import { currentTenantId } from '../../../tenancy/context.js';
 import { escapeHtml, quote } from '../../common/html.js';
 import { cb } from '../callback-data.js';
 import { editBtn } from '../controls.js';
@@ -134,17 +135,19 @@ export function buildModelPicker(
 
 export function registerModels(kit: AdminKit): void {
   const { router, deps } = kit;
-  const cache = new Map<ProviderId, { models: ModelInfo[]; at: number }>();
+  // Keyed by tenant + provider: every workspace uses its own API key (different model lists).
+  const cache = new Map<string, { models: ModelInfo[]; at: number }>();
 
   const providers = (): ProviderOpt[] => deps.registry.configured().map((p) => ({ id: p.id, displayName: p.displayName }));
   const providerOf = (id: string): ProviderOpt | undefined => providers().find((p) => p.id === id);
 
   const models = async (id: ProviderId): Promise<{ models: ModelInfo[]; failed: boolean }> => {
-    const hit = cache.get(id);
+    const key = `${currentTenantId('models')}:${id}`;
+    const hit = cache.get(key);
     if (hit && Date.now() - hit.at < MODEL_CACHE_MS) return { models: hit.models, failed: false };
     try {
       const list = (await deps.registry.listModels(id)).filter((m) => m.id.length > 0);
-      cache.set(id, { models: list, at: Date.now() });
+      cache.set(key, { models: list, at: Date.now() });
       return { models: list, failed: false };
     } catch (error) {
       logFailure(kit, `listModels(${id})`, error);

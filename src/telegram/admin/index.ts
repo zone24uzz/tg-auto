@@ -6,6 +6,7 @@ import { adminGuard } from './guard.js';
 import type { AdminKit } from './kit.js';
 import { AdminRouter } from './router.js';
 import { AdminStateStore } from './state.js';
+import { registerAccess } from './views/access.js';
 import { registerAdvanced } from './views/advanced.js';
 import { registerAssistant } from './views/assistant.js';
 import { registerAttention } from './views/attention.js';
@@ -47,6 +48,7 @@ export function createAdminKit(deps: AdminDeps): AdminKit {
   registerLogs(kit);
   registerPrivacy(kit);
   registerAssistant(kit);
+  registerAccess(kit);
   return kit;
 }
 
@@ -62,7 +64,8 @@ export function createAdminComposer(deps: AdminDeps): Composer<Context> {
   const kit = createAdminKit(deps);
   const composer = new Composer<Context>();
   const scoped = composer.on(['message', 'callback_query']);
-  scoped.use(adminGuard(deps.adminTelegramUserId));
+  // Workspace owners get the admin UI; everyone else in a private chat gets onboarding.
+  scoped.use(adminGuard(deps.onboarding ? (ctx) => deps.onboarding!.handle(ctx) : undefined));
   scoped.on('callback_query', (ctx) => handleCallback(kit, ctx));
   scoped.on('message', (ctx, next) => handleMessage(kit, ctx, next));
   return composer;

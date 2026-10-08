@@ -2,6 +2,7 @@ import { formatDateTime } from '../../../utils/time.js';
 import { escapeHtml } from '../../common/html.js';
 import { cb } from '../callback-data.js';
 import type { AdminKit } from '../kit.js';
+import { isSuperAdmin } from './access.js';
 import { Kb, fit, pageArg, show, type View } from '../ui.js';
 
 export const EVENTS_PER_PAGE = 15;
@@ -61,7 +62,7 @@ export function registerLogs(kit: AdminKit): void {
   kit.router.action('lg', async (ctx, [raw]) => {
     const page = pageArg(raw);
     const [events, audits] = await Promise.all([
-      deps.events.recent(EVENTS_PER_PAGE, page * EVENTS_PER_PAGE),
+      deps.events.recent(EVENTS_PER_PAGE, page * EVENTS_PER_PAGE, undefined, isSuperAdmin(kit, ctx)),
       deps.audit.recent(AUDIT_PER_PAGE, page * AUDIT_PER_PAGE),
     ]);
     await show(ctx, buildLogs(events, audits, page, deps.timezone));

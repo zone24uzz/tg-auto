@@ -1,4 +1,5 @@
 import type { Db } from '../database/client.js';
+import { currentTenantId } from '../tenancy/context.js';
 import type { Chat, Message, MessageDirection, MessageStatus, TelegramUser } from '../generated/prisma/client.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { ContentCipher } from '../security/crypto.js';
@@ -54,7 +55,7 @@ export class MessageRepository {
       ...(sender.isContact !== undefined ? { isContact: sender.isContact } : {}),
     };
     return this.db.telegramUser.upsert({
-      where: { telegramUserId: sender.telegramUserId },
+      where: { tenantId_telegramUserId: { tenantId: currentTenantId(), telegramUserId: sender.telegramUserId } },
       create: { telegramUserId: sender.telegramUserId, ...data },
       update: data,
     });
@@ -391,6 +392,7 @@ export class MessageRepository {
              EXISTS (SELECT 1 FROM media md WHERE md."messageId" = m.id AND md.status = 'PENDING' AND md.kind <> 'STICKER') AS "hasPendingMedia"
         FROM messages m
         JOIN chats c ON c.id = m."chatId"
+        JOIN tenants t ON t.id = m."tenantId" AND t.status = 'ACTIVE'
        WHERE m.direction = 'INCOMING'
          AND (m.status IN ('QUEUED', 'RECEIVED')
               OR (m.status = 'PROCESSING' AND (c."processingUntil" IS NULL OR c."processingUntil" < now())))

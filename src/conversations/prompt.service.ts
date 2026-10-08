@@ -1,6 +1,7 @@
 import type { AuditService } from '../audit/audit.service.js';
 import { defaultOwnerPrompt } from '../config/defaults.js';
 import type { Db } from '../database/client.js';
+import { currentTenantId } from '../tenancy/context.js';
 import { isUniqueViolation } from '../messages/message.repository.js';
 
 const KIND = 'SYSTEM';
@@ -10,7 +11,8 @@ export class PromptValidationError extends Error {}
 
 /** Versioned owner prompt (the editable part of the system instructions). */
 export class PromptService {
-  private cache: { content: string; version: number; at: number } | null = null;
+  /** Per-tenant cache of the active prompt. */
+  private readonly cache = new Map<number, { content: string; version: number; at: number }>();
 
   constructor(
     private readonly db: Db,
@@ -19,7 +21,9 @@ export class PromptService {
   ) {}
 
   async getActive(): Promise<{ content: string; version: number }> {
-    if (this.cache && Date.now() - this.cache.at < 5_000) return this.cache;
+    const tenantId = currentTenantId('prompt');
+    const hit = this.cache.get(tenantId);
+    if (hit && Date.now() - hit.at < 5_000) return { content: hit.content, version: hit.version };
     let active = await this.db.prompt.findFirst({ where: { kind: KIND, isActive: true }, orderBy: { version: 'desc' } });
     if (!active) {
       try {
@@ -31,8 +35,8 @@ export class PromptService {
         active = await this.db.prompt.findFirstOrThrow({ where: { kind: KIND }, orderBy: { version: 'desc' } });
       }
     }
-    this.cache = { content: active.content, version: active.version, at: Date.now() };
-    return this.cache;
+    this.cache.set(tenantId, { content: active.content, version: active.version, at: Date.now() });
+    return { content: active.content, version: active.version };
   }
 
   async list(take = 10, skip = 0) {
@@ -44,7 +48,7 @@ export class PromptService {
   }
 
   async getVersion(version: number) {
-    return this.db.prompt.findUnique({ where: { kind_version: { kind: KIND, version } } });
+    return this.db.prompt.findUnique({ where: { tenantId_kind_version: { tenantId: currentTenantId(), kind: KIND, version } } });
   }
 
   validate(content: string): string {
@@ -65,7 +69,7 @@ export class PromptService {
       await tx.prompt.create({ data: { kind: KIND, version: next, content: valid, isActive: true, createdBy: adminTelegramUserId } });
       return next;
     });
-    this.cache = null;
+    this.cache.clear();
     await this.audit.record(adminTelegramUserId, 'PROMPT_CHANGED', `prompt:v${version}`, { length: valid.length });
     return version;
   }

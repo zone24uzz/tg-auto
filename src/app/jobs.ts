@@ -4,6 +4,9 @@ import { childLogger } from '../logging/logger.js';
 import { describeError } from '../logging/sanitize.js';
 import type { PgQueue } from '../queues/pg-queue.js';
 import { sweepOrphanedMessages } from '../queues/sweeper.js';
+import { OPEN_SETUP_TTL_MS } from '../onboarding/onboarding.js';
+import { currentTenant, runAsSystem } from '../tenancy/context.js';
+import { currentTenantId } from '../tenancy/context.js';
 import { PipelineRetryLater, type OwnerAiOutcome, type ReplyPipeline } from '../responder/pipeline.js';
 import type { AdminNotifier } from '../telegram/admin/notifier.js';
 import { RetryLaterError, WorkerRunner, type JobHandler } from '../workers/worker-runner.js';
@@ -86,7 +89,10 @@ export function buildJobHandlers(c: Container): Record<string, JobHandler> {
       await c.assistant.runReminder(num(job.payload, 'taskId'));
     },
     'attention.ai': async (job: Job) => {
-      await runOwnerApprovedAi({ pipeline: c.pipeline, notifier: c.notifier, queue: c.queue, adminTelegramUserId: c.env.ADMIN_TELEGRAM_USER_ID }, job);
+      await runOwnerApprovedAi(
+        { pipeline: c.pipeline, notifier: c.notifier, queue: c.queue, adminTelegramUserId: currentTenant('attention.ai').ownerTelegramUserId },
+        job,
+      );
     },
     'maintenance.cleanup': async () => {
       const settings = await c.settings.get();
@@ -108,16 +114,99 @@ export function buildWorker(c: Container): WorkerRunner {
     async (job, error, dead) => {
       if (dead) await onJobDead({ pipeline: c.pipeline, events: c.events }, job, error);
     },
+    jobScope(c),
   );
 }
 
-/** Clears an expired pause exactly once across processes; true when this caller cleared it. */
+/**
+ * The tenant a job belongs to: `__tenantId` stamped at enqueue time, or — for jobs enqueued by
+ * system sweeps or before multi-tenancy — derived from the row the job points at. null = system job.
+ */
+export async function tenantIdOfJob(db: Container['db'], job: Pick<Job, 'type' | 'payload'>): Promise<number | null> {
+  const p = (job.payload ?? {}) as Record<string, unknown>;
+  if (typeof p.__tenantId === 'number' && Number.isInteger(p.__tenantId)) return p.__tenantId;
+  const id = (key: string): number | null => (typeof p[key] === 'number' && Number.isInteger(p[key]) ? (p[key] as number) : null);
+  return runAsSystem(async () => {
+    switch (job.type) {
+      case 'message.process': {
+        const messageId = id('messageId');
+        return messageId === null ? null : ((await db.message.findUnique({ where: { id: messageId }, select: { tenantId: true } }))?.tenantId ?? null);
+      }
+      case 'summary.update': {
+        const chatId = id('chatId');
+        return chatId === null ? null : ((await db.chat.findUnique({ where: { id: chatId }, select: { tenantId: true } }))?.tenantId ?? null);
+      }
+      case 'attention.ai': {
+        const attentionId = id('attentionId');
+        return attentionId === null
+          ? null
+          : ((await db.ownerAttention.findUnique({ where: { id: attentionId }, select: { tenantId: true } }))?.tenantId ?? null);
+      }
+      case 'assistant.remind': {
+        const taskId = id('taskId');
+        return taskId === null ? null : ((await db.assistantTask.findUnique({ where: { id: taskId }, select: { tenantId: true } }))?.tenantId ?? null);
+      }
+      default:
+        return null;
+    }
+  });
+}
+
+/** Job types that always belong to a workspace (they must never run in system scope). */
+const TENANT_JOB_TYPES = new Set(['message.process', 'summary.update', 'attention.ai', 'assistant.remind']);
+
+/**
+ * Runs a job in its tenant's scope. Jobs of a workspace that is no longer active (revoked) or no longer
+ * exists — and workspace jobs whose tenant cannot be determined — are completed without running, so
+ * nothing is sent on behalf of a revoked owner. Only true system jobs run in system scope.
+ */
+export function jobScope(c: Pick<Container, 'db' | 'tenants' | 'queue'>): (job: Job, fn: () => Promise<void>) => Promise<void> {
+  return async (job, fn) => {
+    const tenantId = await tenantIdOfJob(c.db, job);
+    if (tenantId === null) {
+      if (TENANT_JOB_TYPES.has(job.type)) {
+        log.warn({ jobId: job.id, type: job.type }, 'workspace job without a resolvable tenant skipped');
+        await c.queue.complete(job.id);
+        return;
+      }
+      await runAsSystem(fn);
+      return;
+    }
+    const tenant = await c.tenants.byId(tenantId);
+    if (!tenant || tenant.status !== 'ACTIVE') {
+      log.warn({ jobId: job.id, tenantId, status: tenant?.status ?? 'missing' }, 'job of an inactive workspace skipped');
+      await c.queue.complete(job.id);
+      return;
+    }
+    await c.tenants.run(tenant, fn);
+  };
+}
+
+/** Clears the current tenant's expired pause exactly once across processes; true when this caller cleared it. */
 async function clearExpiredPause(c: Container, pausedUntil: string): Promise<boolean> {
+  const tenantId = currentTenantId('pause');
   const changed = await c.db.$executeRaw`
     UPDATE settings SET value = 'null'::jsonb, "updatedAt" = now()
-     WHERE key = 'pausedUntil' AND value = ${JSON.stringify(pausedUntil)}::jsonb`;
+     WHERE "tenantId" = ${tenantId} AND key = 'pausedUntil' AND value = ${JSON.stringify(pausedUntil)}::jsonb`;
   c.settings.invalidate();
   return changed === 1;
+}
+
+/** One tenant's periodic work: expire its pause, run its assistant, schedule its daily retention cleanup. */
+async function tenantTick(c: Container): Promise<void> {
+  // Fresh values: another process (admin bot) may have changed the pause a moment ago.
+  c.settings.invalidate();
+  const settings = await c.settings.get();
+  if (settings.pausedUntil && new Date(settings.pausedUntil).getTime() <= Date.now()) {
+    if (await clearExpiredPause(c, settings.pausedUntil)) await c.notifier.text('▶️ Pauza tugadi — avtojavob yana ishlayapti.');
+  }
+  // Owner's assistant: presence polling for "tell me when X is online" + stale draft cleanup.
+  await c.assistant.tick().catch((error: unknown) => log.warn({ err: error }, 'assistant tick failed'));
+  const last = settings.lastCleanupAt ? new Date(settings.lastCleanupAt).getTime() : 0;
+  if (Date.now() - last > 24 * 3_600_000) {
+    const day = new Date().toISOString().slice(0, 10);
+    await c.queue.enqueue('maintenance', 'maintenance.cleanup', {}, { dedupeKey: `cleanup:${currentTenant().tenantId}:${day}`, maxAttempts: 2 });
+  }
 }
 
 /**
@@ -126,29 +215,37 @@ async function clearExpiredPause(c: Container, pausedUntil: string): Promise<boo
  * (deduplicated per day so several processes don't double-run it).
  */
 export function startScheduler(c: Container): () => void {
+  const scope = jobScope(c);
   const tick = async () => {
     try {
-      const recovered = await c.queue.recoverStale(undefined, (job) =>
-        onJobDead({ pipeline: c.pipeline, events: c.events }, job, job.lastError ?? 'worker stopped responding'),
-      );
-      if (recovered > 0) log.warn({ recovered }, 'recovered stale jobs');
-      const swept = await sweepOrphanedMessages({ repo: c.repo, queue: c.queue });
-      if (swept > 0) log.warn({ swept }, 're-enqueued orphaned messages');
-      // Fresh values: another process (admin bot) may have changed the pause a moment ago.
-      c.settings.invalidate();
-      const settings = await c.settings.get();
-      if (settings.pausedUntil && new Date(settings.pausedUntil).getTime() <= Date.now()) {
-        if (await clearExpiredPause(c, settings.pausedUntil)) await c.notifier.text('▶️ Pauza tugadi — avtojavob yana ishlayapti.');
-      }
-      // Owner's assistant: presence polling for "tell me when X is online" + stale draft cleanup.
-      await c.assistant.tick().catch((error: unknown) => log.warn({ err: error }, 'assistant tick failed'));
-      const last = settings.lastCleanupAt ? new Date(settings.lastCleanupAt).getTime() : 0;
-      if (Date.now() - last > 24 * 3_600_000) {
-        const day = new Date().toISOString().slice(0, 10);
-        await c.queue.enqueue('maintenance', 'maintenance.cleanup', {}, { dedupeKey: `cleanup:${day}`, maxAttempts: 2 });
-      }
+      await runAsSystem(async () => {
+        const recovered = await c.queue.recoverStale(undefined, (job) =>
+          scope(job, () => onJobDead({ pipeline: c.pipeline, events: c.events }, job, job.lastError ?? 'worker stopped responding')),
+        );
+        if (recovered > 0) log.warn({ recovered }, 'recovered stale jobs');
+        const swept = await sweepOrphanedMessages({ repo: c.repo, queue: c.queue });
+        if (swept > 0) log.warn({ swept }, 're-enqueued orphaned messages');
+        // Sign-ups abandoned before submitting (tenants is a global table).
+        const expired = await c.db.tenant.deleteMany({
+          where: { status: 'PENDING', onboardingStep: { not: null }, updatedAt: { lt: new Date(Date.now() - OPEN_SETUP_TTL_MS) } },
+        });
+        if (expired.count > 0) c.tenants.invalidate();
+      });
     } catch (error) {
       log.error({ err: error }, 'scheduler tick failed');
+    }
+    let tenants: Awaited<ReturnType<typeof c.tenants.listActive>> = [];
+    try {
+      tenants = await c.tenants.listActive();
+    } catch (error) {
+      log.error({ err: error }, 'could not list tenants');
+    }
+    for (const tenant of tenants) {
+      try {
+        await c.tenants.run(tenant, () => tenantTick(c));
+      } catch (error) {
+        log.error({ err: error, tenantId: tenant.id }, 'tenant scheduler tick failed');
+      }
     }
   };
   void tick();

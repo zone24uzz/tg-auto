@@ -42,6 +42,8 @@ export interface UserbotRuntimeDeps {
   onLoggedOut: () => void;
   /** Presence pushes from Telegram (UpdateUserStatus) for the owner's assistant. */
   onPresence?: (userId: bigint, state: PresenceState) => void;
+  /** Runs work in this workspace's tenant scope (every MTProto event goes through it). */
+  runInScope?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 /**

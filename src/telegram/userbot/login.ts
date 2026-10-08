@@ -155,7 +155,7 @@ export function statusText(st: UserbotStatus, adminId: bigint, loginInProgress: 
   switch (st.state) {
     case 'ready':
       lines.push(`🟢 Userbot ulangan: ${st.username ? `@${st.username}` : 'akkaunt'} (id ${st.userId})`);
-      if (st.userId !== adminId) lines.push(`⚠️ Bu akkaunt ADMIN_TELEGRAM_USER_ID (${adminId}) emas — xabarlar e’tiborsiz qoldiriladi.`);
+      if (st.userId !== adminId) lines.push(`⚠️ Bu akkaunt sizning akkauntingiz (id ${adminId}) emas — xabarlar e’tiborsiz qoldiriladi.`);
       break;
     case 'connecting':
       lines.push('⏳ Userbot Telegramga ulanmoqda…');
@@ -256,7 +256,7 @@ export class LoginController<B extends LoginBundle> {
       adopted = true;
       const lines = [`✅ Userbot ulandi: ${accountLabel(me)} (id ${String(me.id)})`];
       if (String(me.id) !== this.host.adminTelegramUserId.toString())
-        lines.push(`⚠️ Bu akkaunt ADMIN_TELEGRAM_USER_ID (${this.host.adminTelegramUserId}) emas — xabarlar e’tiborsiz qoldiriladi, toki ADMIN_TELEGRAM_USER_ID shu akkauntga mos kelmaguncha.`);
+        lines.push(`⚠️ Bu akkaunt sizning akkauntingiz (id ${this.host.adminTelegramUserId}) emas — xabarlar e’tiborsiz qoldiriladi. /logout qiling va o‘z akkauntingiz bilan /login qiling.`);
       if (!sessionSaved) lines.push('⚠️ DATA_ENCRYPTION_KEY o‘rnatilmagan: sessiya bazaga saqlanmadi, qayta ishga tushirilgandan keyin yana /login kerak bo‘ladi.');
       await attempt.say(lines.join('\n'));
     } catch (error) {

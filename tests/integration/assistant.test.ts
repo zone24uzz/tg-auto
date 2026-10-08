@@ -73,7 +73,7 @@ d('owner assistant (real PostgreSQL)', () => {
     const task = await tdb.db.assistantTask.findFirstOrThrow();
     expect(task).toMatchObject({ kind: 'WATCH_ONLINE', targetTelegramUserId: FIRDAVS, active: true, repeat: false, lastPresence: 'offline' });
     // The person found through Telegram is stored with the access hash.
-    expect((await tdb.db.telegramUser.findUniqueOrThrow({ where: { telegramUserId: FIRDAVS } })).accessHash).toBe('123');
+    expect((await tdb.db.telegramUser.findFirstOrThrow({ where: { telegramUserId: FIRDAVS } })).accessHash).toBe('123');
 
     await assistant.onPresence(FIRDAVS, 'offline');
     expect(texts()).toHaveLength(0);

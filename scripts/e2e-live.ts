@@ -17,6 +17,8 @@ import path from 'node:path';
 import type { Message } from 'grammy/types';
 import pg from 'pg';
 import { buildContainer } from '../src/app/container.js';
+import { enterScope } from '../src/tenancy/context.js';
+import { scopeOf } from '../src/tenancy/tenant.service.js';
 import { buildWorker } from '../src/app/jobs.js';
 import { loadDotEnv } from '../src/config/dotenv.js';
 import { parseEnv } from '../src/config/env.js';
@@ -152,6 +154,9 @@ async function main(): Promise<void> {
   const media = await makeMedia();
   const env = parseEnv({ ...process.env, DATABASE_URL: E2E_DB, TELEGRAM_API_ROOT: apiRoot, NODE_ENV: 'development', LOG_LEVEL: 'warn' });
   const c = buildContainer(env);
+  // Services are called directly here (no Telegram update / worker entry point): act as the super-admin's workspace.
+  const superTenant = await c.tenants.ensureSuperAdmin(env.ADMIN_TELEGRAM_USER_ID);
+  enterScope({ kind: 'tenant', ...scopeOf(superTenant) });
   await c.settings.set('debounceSeconds', 1);
   await c.settings.set('responseDelayMode', 'OFF');
   await c.connections.upsertFromUpdate({
