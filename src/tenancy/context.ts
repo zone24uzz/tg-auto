@@ -31,12 +31,27 @@ export class TenantContextMissingError extends Error {
 const storage = new AsyncLocalStorage<Scope>();
 let testFallback: Scope | undefined;
 
+/**
+ * Runs `fn` inside `scope`. Prisma queries are LAZY thenables: `runAsSystem(() => db.x.findMany())`
+ * only builds the query, which would otherwise execute — and be tenant-scoped — wherever it is awaited
+ * later, outside this scope. Any thenable result is therefore started here, while the scope is active.
+ */
+function runIn<T>(scope: Scope, fn: () => T): T {
+  return storage.run(scope, () => {
+    const result = fn();
+    if (result !== null && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') {
+      return (result as unknown as PromiseLike<unknown>).then((value) => value) as unknown as T;
+    }
+    return result;
+  });
+}
+
 export function runWithTenant<T>(tenant: Omit<TenantScope, 'kind'>, fn: () => T): T {
-  return storage.run({ kind: 'tenant', ...tenant }, fn);
+  return runIn({ kind: 'tenant', ...tenant }, fn);
 }
 
 export function runAsSystem<T>(fn: () => T): T {
-  return storage.run({ kind: 'system' }, fn);
+  return runIn({ kind: 'system' }, fn);
 }
 
 /**
