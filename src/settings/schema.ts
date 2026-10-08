@@ -167,7 +167,7 @@ export function buildDefaultSettings(env: Env): Settings {
     personalThreshold: 0.8,
     personalReplyText: defaultPersonalReply(owner),
     ownerRequiredReplyText: defaultOwnerRequiredReply(owner),
-    uncertainAction: 'AI',
+    uncertainAction: 'OWNER',
     personalNoticeCooldownMinutes: 30,
     fallbackReplyText: defaultFallbackReply(owner),
     unsupportedMediaText: defaultUnsupportedMediaReply(owner),

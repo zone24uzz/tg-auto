@@ -173,8 +173,10 @@ export function combineClassification(
 ): ClassificationResult {
   const injectionSuspected = h.injectionSuspected;
   const threshold = settings.personalThreshold;
+  // Uncertain → the configured action, except text that looks like a prompt injection: it never goes
+  // to the AI on an uncertain verdict, whatever uncertainAction says (same gate with or without the LLM).
   const uncertain = (reason: string, source: ClassificationResult['source'], confidence: number): ClassificationResult =>
-    settings.uncertainAction === 'AI'
+    settings.uncertainAction === 'AI' && !injectionSuspected
       ? { category: 'UNKNOWN', confidence, route: 'AUTO', reason, source, injectionSuspected }
       : { category: 'REQUIRES_OWNER', confidence, route: 'OWNER', reason, source, injectionSuspected };
 
@@ -205,12 +207,12 @@ export function combineClassification(
   }
 
   if (llm) {
-    // Only a confident owner category goes to the owner; a weak or contradictory owner signal
-    // (owner category below the threshold, or requires_owner on a safe category) is "uncertain".
+    // An owner category always goes to the owner (fail closed: the AI never answers what the classifier
+    // calls personal); below the threshold it is filed as REQUIRES_OWNER. requires_owner on an otherwise
+    // safe category is contradictory → "uncertain".
     if (OWNER_CATEGORIES.has(llm.category)) {
-      if (llm.confidence >= threshold)
-        return { category: llm.category, confidence: llm.confidence, route: 'OWNER', reason: llm.reason, source: 'llm', injectionSuspected };
-      return uncertain(`low-confidence ${llm.category.toLowerCase()}: ${llm.reason}`, 'llm', llm.confidence);
+      const category: Classification = llm.confidence >= threshold ? llm.category : 'REQUIRES_OWNER';
+      return { category, confidence: llm.confidence, route: 'OWNER', reason: llm.reason, source: 'llm', injectionSuspected };
     }
     if (llm.requires_owner) return uncertain(`owner maybe needed: ${llm.reason}`, 'llm', llm.confidence);
     if (llm.category === 'SPAM') {
@@ -241,9 +243,6 @@ export function combineClassification(
     return { category: 'BUSINESS', confidence: h.businessScore, route: 'AUTO', reason: 'business pattern', source: 'heuristic', injectionSuspected };
   if (h.isGreetingOnly)
     return { category: 'NORMAL', confidence: 0.9, route: 'AUTO', reason: 'greeting', source: 'heuristic', injectionSuspected };
-  // Without a working classifier, never let the AI answer text that looks like a prompt injection.
-  if (injectionSuspected)
-    return { category: 'REQUIRES_OWNER', confidence: 0.3, route: 'OWNER', reason: 'possible prompt injection, classifier unavailable', source: 'heuristic', injectionSuspected };
   return uncertain('no classifier signal', 'heuristic', 0.3);
 }
 
