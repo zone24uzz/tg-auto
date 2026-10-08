@@ -1,11 +1,12 @@
 import type { Composer, Context } from 'grammy';
 import { Api } from 'telegram';
-import type { UserbotRuntime, UserbotRuntimeDeps, UserbotStatus } from '../../app/userbot-contract.js';
+import type { UserbotAssistantApi, UserbotRuntime, UserbotRuntimeDeps, UserbotStatus } from '../../app/userbot-contract.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError, registerSecrets } from '../../logging/sanitize.js';
 import type { NormalizedSender } from '../../messages/types.js';
 import { escapeHtml } from '../common/html.js';
 import { catchUpUnread } from './catch-up.js';
+import { createAssistantApi, registerPresenceHandler } from './presence.js';
 import { closeClient, createMtprotoClient, isAuthLostError, type ClientBundle } from './client.js';
 import { MtprotoDownloader } from './downloader.js';
 import { registerEventHandlers } from './events.js';
@@ -46,6 +47,7 @@ export function createUserbotRuntime(deps: UserbotRuntimeDeps): UserbotRuntime {
 class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
   readonly composer: Composer<Context>;
   readonly downloader: MtprotoDownloader;
+  readonly assistantApi: UserbotAssistantApi;
   readonly transport: MtprotoTransport;
   readonly apiId: number;
   readonly apiHash: string;
@@ -77,6 +79,7 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
     const getClient = () => (this.state.state === 'ready' ? (this.bundle?.client ?? null) : null);
     this.transport = new MtprotoTransport({ getClient, peers, onAuthLost: (error) => void this.authLost(error) });
     this.downloader = new MtprotoDownloader(getClient, peers, deps.tmpDir);
+    this.assistantApi = createAssistantApi(getClient);
     this.login = new LoginController<ClientBundle>(this);
     this.composer = createLoginComposer(this, this.login);
   }
@@ -219,7 +222,13 @@ class UserbotRuntimeImpl implements UserbotRuntime, LoginHost<ClientBundle> {
       business: this.deps.business,
       transport: this.transport,
     };
-    this.unregister = registerEventHandlers(eventContext);
+    const unregisterEvents = registerEventHandlers(eventContext);
+    const onPresence = this.deps.onPresence;
+    const unregisterPresence = onPresence ? registerPresenceHandler(bundle.client, onPresence) : () => undefined;
+    this.unregister = () => {
+      unregisterEvents();
+      unregisterPresence();
+    };
     this.state = { state: 'ready', userId: meId, username: me.username };
     this.deps.onReady(this.transport);
     this.healthFailures = 0;

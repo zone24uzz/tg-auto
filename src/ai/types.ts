@@ -36,7 +36,7 @@ export type ContentPart =
   | { type: 'text'; text: string } 
   | { type: 'image'; image: ImageInput }
   | { type: 'tool_call'; call: ToolCall }
-  | { type: 'tool_result'; toolCallId: string; result: any };
+  | { type: 'tool_result'; toolCallId: string; result: unknown };
 
 export interface ChatTurn {
   role: 'user' | 'assistant';

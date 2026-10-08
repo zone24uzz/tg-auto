@@ -32,7 +32,7 @@ export async function executeGithubTool(name: string, args: Record<string, unkno
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!userRes.ok) return `Error: GitHub auth failed (${userRes.status})`;
-      const user: any = await userRes.json();
+      const user = (await userRes.json()) as { login: string };
       const owner = user.login;
 
       const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/collaborators/${username}`, {

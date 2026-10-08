@@ -2,6 +2,7 @@ import type { Bot } from 'grammy';
 import { DefaultAiRouter } from '../ai/router/ai-router.js';
 import { GlobalLimiter } from '../ai/router/global-limiter.js';
 import { ProviderRegistry } from '../ai/registry.js';
+import { OwnerAssistant } from '../assistant/assistant.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { MessageClassifier } from '../classifiers/classifier.js';
 import type { Env } from '../config/env.js';
@@ -133,6 +134,16 @@ export function buildContainer(env: Env) {
   const stats = new StatsService(db, env.TIMEZONE);
   const privacy = new PrivacyService(db, storage, audit, cipher.enabled);
   const cleanup = new CleanupService(db, queue, storage, env.MEDIA_TMP_DIR, events);
+  const assistant = new OwnerAssistant({
+    db,
+    ai,
+    cipher,
+    notifier,
+    queue,
+    sendAsOwner: (chatId, text) => sender.sendAsOwner(chatId, text),
+    timezone: env.TIMEZONE,
+    events,
+  });
   const business = new BusinessHandlers({
     db,
     repo,
@@ -144,6 +155,7 @@ export function buildContainer(env: Env) {
     notifier,
     events,
     logMessageContent: env.LOG_MESSAGE_CONTENT,
+    assistant,
   });
 
   return {
@@ -180,6 +192,7 @@ export function buildContainer(env: Env) {
     privacy,
     cleanup,
     business,
+    assistant,
   };
 }
 

@@ -46,6 +46,11 @@ export class TelegramSender {
     this.userbot = transport;
   }
 
+  /** Sends a new message from the owner's own account (userbot only; used by the owner's assistant). */
+  sendAsOwner(chatId: bigint, text: string): Promise<number> {
+    return this.requireUserbot().sendText(chatId, text);
+  }
+
   private requireUserbot(): UserbotTransport {
     if (!this.userbot) throw new SendError('userbot transport is not connected (login required)', true);
     return this.userbot;

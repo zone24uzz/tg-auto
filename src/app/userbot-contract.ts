@@ -36,6 +36,35 @@ export interface UserbotRuntimeDeps {
   onReady: (transport: UserbotTransport) => void;
   /** Called when the session is lost/logged out. */
   onLoggedOut: () => void;
+  /** Presence pushes from Telegram (UpdateUserStatus) for the owner's assistant. */
+  onPresence?: (userId: bigint, state: PresenceState) => void;
+}
+
+/**
+ * What Telegram reveals about a user's presence. `hidden` = their "last seen" privacy hides it from the
+ * owner (then no online notification is possible).
+ */
+export type PresenceState = 'online' | 'offline' | 'recently' | 'hidden';
+
+export interface ResolvedTelegramUser {
+  id: bigint;
+  accessHash?: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  isContact?: boolean;
+  isBot?: boolean;
+}
+
+/** Read-only MTProto helpers for the owner's assistant (null results when the userbot is offline). */
+export interface UserbotAssistantApi {
+  isReady(): boolean;
+  /** Current presence of the given users (users.GetUsers); users Telegram does not return are omitted. */
+  presence(users: Array<{ id: bigint; accessHash?: string | null }>): Promise<Map<bigint, PresenceState>>;
+  /** Looks up a public @username. */
+  resolveUsername(username: string): Promise<ResolvedTelegramUser | null>;
+  /** Searches the owner's own contacts and chats by name (contacts.Search "my results" only). */
+  searchPeople(query: string, limit?: number): Promise<ResolvedTelegramUser[]>;
 }
 
 export type UserbotStatus =
@@ -55,6 +84,8 @@ export interface UserbotRuntime {
   composer: Composer<Context>;
   /** Downloads media referenced by `mt:` file ids (with the same size limits as the Bot API downloader). */
   downloader: FileDownloader;
+  /** Presence / username lookups for the owner's assistant. */
+  assistantApi: UserbotAssistantApi;
 }
 
 /** Sends `mt:` refs to the userbot downloader and everything else to the Bot API downloader. */

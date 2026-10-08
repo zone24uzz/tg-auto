@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     queue: c.queue,
     connections: c.connections,
     cleanup: c.cleanup,
+    assistant: c.assistant,
   });
 
   if (!c.cipher.enabled) {
@@ -69,8 +70,12 @@ async function main(): Promise<void> {
       events: c.events,
       onReady: (transport) => c.sender.setUserbotTransport(transport),
       onLoggedOut: () => c.sender.setUserbotTransport(null),
+      onPresence: (userId, state) => {
+        c.assistant.onPresence(userId, state).catch((error: unknown) => logger.warn({ err: error }, 'assistant presence handler failed'));
+      },
     });
     c.downloader.setUserbotDownloader(userbot.downloader);
+    c.assistant.attachUserbot(userbot.assistantApi);
   }
   const adminStack = new Composer<Context>();
   if (userbot) adminStack.use(userbot.composer);

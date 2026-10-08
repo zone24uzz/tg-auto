@@ -7,6 +7,7 @@ import type { AdminKit } from './kit.js';
 import { AdminRouter } from './router.js';
 import { AdminStateStore } from './state.js';
 import { registerAdvanced } from './views/advanced.js';
+import { registerAssistant } from './views/assistant.js';
 import { registerAttention } from './views/attention.js';
 import { registerAutoReply } from './views/auto-reply.js';
 import { registerHistory } from './views/history.js';
@@ -45,6 +46,7 @@ export function createAdminKit(deps: AdminDeps): AdminKit {
   registerMaintenance(kit);
   registerLogs(kit);
   registerPrivacy(kit);
+  registerAssistant(kit);
   return kit;
 }
 

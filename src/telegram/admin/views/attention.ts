@@ -221,7 +221,7 @@ export function registerAttention(kit: AdminKit): void {
       });
       
       // Now enqueue the AI response job which will read history and reply.
-      const jobId = await deps.queue.enqueue(
+      await deps.queue.enqueue(
         'text',
         'attention.ai',
         { attentionId: item.id, adminId: adminId.toString() },

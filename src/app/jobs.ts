@@ -82,6 +82,9 @@ export function buildJobHandlers(c: Container): Record<string, JobHandler> {
     'summary.update': async (job: Job) => {
       await c.summaries.update(num(job.payload, 'chatId'), await c.settings.get());
     },
+    'assistant.remind': async (job: Job) => {
+      await c.assistant.runReminder(num(job.payload, 'taskId'));
+    },
     'attention.ai': async (job: Job) => {
       await runOwnerApprovedAi({ pipeline: c.pipeline, notifier: c.notifier, queue: c.queue, adminTelegramUserId: c.env.ADMIN_TELEGRAM_USER_ID }, job);
     },
@@ -137,6 +140,8 @@ export function startScheduler(c: Container): () => void {
       if (settings.pausedUntil && new Date(settings.pausedUntil).getTime() <= Date.now()) {
         if (await clearExpiredPause(c, settings.pausedUntil)) await c.notifier.text('▶️ Pauza tugadi — avtojavob yana ishlayapti.');
       }
+      // Owner's assistant: presence polling for "tell me when X is online" + stale draft cleanup.
+      await c.assistant.tick().catch((error: unknown) => log.warn({ err: error }, 'assistant tick failed'));
       const last = settings.lastCleanupAt ? new Date(settings.lastCleanupAt).getTime() : 0;
       if (Date.now() - last > 24 * 3_600_000) {
         const day = new Date().toISOString().slice(0, 10);

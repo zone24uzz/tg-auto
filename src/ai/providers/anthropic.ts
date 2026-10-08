@@ -60,7 +60,7 @@ function toAnthropicMessages(turns: ChatTurn[]): Array<{ role: 'user' | 'assista
       // Images are only allowed in user turns.
       if (turn.role === 'assistant') return { type: 'text', text: '[image]' };
       if (p.type === 'tool_call' || p.type === 'tool_result') return { type: 'text', text: `[${p.type}]` };
-      return { type: 'image', source: { type: 'base64', media_type: (p as any).image.mimeType, data: (p as any).image.data.toString('base64') } };
+      return { type: 'image', source: { type: 'base64', media_type: p.image.mimeType, data: p.image.data.toString('base64') } };
     }),
   }));
 }

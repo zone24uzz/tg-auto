@@ -4,7 +4,7 @@ import type { Chat, Message } from '../../generated/prisma/client.js';
 import type { EventLog } from '../../logging/events.js';
 import { childLogger } from '../../logging/logger.js';
 import type { MessageRepository } from '../../messages/message.repository.js';
-import type { NormalizedMessage } from '../../messages/types.js';
+import { primaryText, type NormalizedMessage, type NormalizedSender } from '../../messages/types.js';
 import type { OwnerAttentionService } from '../../owner-attention/attention.service.js';
 import type { PgQueue } from '../../queues/pg-queue.js';
 import { findMatchingRule } from '../../rules/rules.engine.js';
@@ -32,6 +32,8 @@ export interface BusinessHandlerDeps {
   notifier: AdminNotifier;
   events: EventLog;
   logMessageContent: boolean;
+  /** Owner's assistant: "tell me when X writes" watches (never blocks ingestion). */
+  assistant?: { onIncomingMessage(info: { telegramUserId: bigint; label: string; preview: string }): Promise<void> };
 }
 
 /**
@@ -87,7 +89,10 @@ export class BusinessHandlers {
 
     const settings = await this.d.settings.get();
     const active = SettingsService.isAutoReplyActive(settings);
-    if (!active && !settings.logWhenDisabled) return;
+    if (!active && !settings.logWhenDisabled) {
+      await this.watchHook(msg, msg.sender);
+      return;
+    }
 
     const user = await this.d.repo.upsertUser(msg.sender);
     const chat = await this.d.repo.upsertChat(conn.id, msg, user.id);
@@ -107,6 +112,7 @@ export class BusinessHandlers {
 
     const { message, created } = await this.d.repo.insertMessage(msg, chat, user.id, 'INCOMING', status, reason);
     if (created) {
+      await this.watchHook(msg, msg.sender);
       log.info(
         {
           messageId: message.id,
@@ -242,6 +248,19 @@ export class BusinessHandlers {
   }
 
   /** The owner wrote personally: close attention items and stop pending auto replies in this chat. */
+  /** Owner's "tell me when X writes" watches; runs once per stored message and never throws. */
+  private async watchHook(msg: NormalizedMessage, sender: NormalizedSender): Promise<void> {
+    if (!this.d.assistant) return;
+    const name = [sender.firstName, sender.lastName].filter(Boolean).join(' ').trim();
+    const label = name || (sender.username ? `@${sender.username}` : `id ${sender.telegramUserId}`);
+    const preview = primaryText(msg) || (msg.media[0] ? `[${msg.media[0].kind.toLowerCase()}]` : '[xabar]');
+    try {
+      await this.d.assistant.onIncomingMessage({ telegramUserId: sender.telegramUserId, label, preview });
+    } catch (error) {
+      log.warn({ err: error }, 'assistant message watch failed');
+    }
+  }
+
   private async ownerIsHandling(chat: Chat): Promise<void> {
     const resolved = await this.d.attention.resolveByOwnerReply(chat.id);
     const stopped = await this.d.db.message.updateMany({

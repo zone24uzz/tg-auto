@@ -1,4 +1,5 @@
 import type { ProviderRegistry } from '../../ai/registry.js';
+import type { AssistantPort } from '../../assistant/assistant.service.js';
 import type { AuditService } from '../../audit/audit.service.js';
 import type { PromptService } from '../../conversations/prompt.service.js';
 import type { Db } from '../../database/client.js';
@@ -40,4 +41,6 @@ export interface AdminDeps {
   queue: PgQueue;
   connections: ConnectionService;
   cleanup: CleanupService;
+  /** Owner's personal assistant (free-text commands, /tasks). Optional: absent → plain hint. */
+  assistant?: AssistantPort;
 }

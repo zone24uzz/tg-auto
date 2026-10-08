@@ -5,10 +5,11 @@ import { NotAdminError } from './guard.js';
 import { adminIdOf, logFailure, validationMessage, type AdminKit } from './kit.js';
 import type { PendingInput } from './state.js';
 import { CANCEL, Kb, NOP, ack, btn, setNotice, type Toast } from './ui.js';
+import { runAssistantText } from './views/assistant.js';
 import { applyPause, pauseTarget, resumeAll, showAutoReply } from './views/auto-reply.js';
 import { showHelp, showMainMenu, showStatus } from './views/main.js';
 
-export const COMMANDS = ['start', 'menu', 'status', 'pause', 'resume', 'privacy', 'help', 'cancel'] as const;
+export const COMMANDS = ['start', 'menu', 'status', 'pause', 'resume', 'privacy', 'help', 'cancel', 'tasks'] as const;
 type Command = (typeof COMMANDS)[number];
 
 /** Routes that must not clear a pending text input when pressed. */
@@ -93,6 +94,9 @@ async function runCommand(kit: AdminKit, ctx: Context, name: Command, arg: strin
     case 'help':
       await showHelp(kit, ctx);
       return;
+    case 'tasks':
+      await kit.router.go(ctx, 'as|list');
+      return;
     case 'cancel': {
       const had = await kit.states.clear(adminId);
       await ctx.reply(had ? '❎ Bekor qilindi.' : 'ℹ️ Bekor qilinadigan narsa yo‘q.', { reply_markup: MENU_KB() });
@@ -150,6 +154,11 @@ export async function handleMessage(kit: AdminKit, ctx: Context, next: NextFunct
       return;
     }
     if (text === undefined) return next();
+    if (kit.deps.assistant) {
+      // No pending input: free text is a command for the owner's personal assistant.
+      await runAssistantText(kit, ctx, text);
+      return;
+    }
     await ctx.reply('ℹ️ Hozir hech qanday matn kutilmayapti. Menyu: /menu · Yordam: /help', { reply_markup: MENU_KB() });
   } catch (error) {
     if (error instanceof NotAdminError) return;

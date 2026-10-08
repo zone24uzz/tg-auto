@@ -184,7 +184,7 @@ function toResponsesInput(turns: ChatTurn[]): Array<{ role: 'user' | 'assistant'
         : parts.map((p) => {
             if (p.type === 'text') return { type: 'input_text', text: p.text };
             if (p.type === 'tool_call' || p.type === 'tool_result') return { type: 'input_text', text: `[${p.type}]` };
-            return { type: 'input_image', image_url: `data:${(p as any).image.mimeType};base64,${(p as any).image.data.toString('base64')}` };
+            return { type: 'input_image', image_url: `data:${p.image.mimeType};base64,${p.image.data.toString('base64')}` };
           });
     out.push({ role: turn.role, content });
   }

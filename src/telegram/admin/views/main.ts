@@ -92,7 +92,10 @@ export function buildHelp(ownerName: string): View {
     '/resume — avtojavobni davom ettirish',
     '/privacy — maxfiylik va ma’lumotlar',
     '/cancel — kutilayotgan matn kiritishni bekor qilish',
+    '/tasks — shaxsiy assistent vazifalari',
     '/help — shu yordam',
+    '',
+    '🧑‍💼 <b>Shaxsiy assistent:</b> menga oddiy matn yozing, masalan <i>Firdavs online bo‘lsa xabar ber</i>, <i>Ali yozsa darhol ayt</i>, <i>soat 18:00 da … eslat</i>, <i>Firdavsga yoz: …</i> (yuborishdan oldin tasdiqlaysiz).',
     '',
     'Tugmalar orqali sozlamalar shu xabarning o‘zida o‘zgaradi. Matn so‘ralganda keyingi xabaringiz javob sifatida qabul qilinadi (15 daqiqa ichida).',
   ].join('\n');

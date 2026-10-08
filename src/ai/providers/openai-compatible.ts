@@ -157,7 +157,7 @@ export class OpenAICompatibleProvider implements AIProvider {
             (p): ChatContentPart => {
               if (p.type === 'text') return { type: 'text', text: p.text };
               if (p.type === 'tool_call' || p.type === 'tool_result') return { type: 'text', text: `[${p.type}]` };
-              return { type: 'image_url', image_url: { url: `data:${(p as any).image.mimeType};base64,${(p as any).image.data.toString('base64')}` } };
+              return { type: 'image_url', image_url: { url: `data:${p.image.mimeType};base64,${p.image.data.toString('base64')}` } };
             }
           ),
         });

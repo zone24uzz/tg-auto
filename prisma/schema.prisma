@@ -540,3 +540,39 @@ model Job {
   @@index([queue, status, runAt])
   @@map("jobs")
 }
+
+// ───────────────────────────── owner's personal assistant ─────────────────────────────
+
+enum AssistantTaskKind {
+  WATCH_ONLINE // notify the owner when a person comes online
+  WATCH_MESSAGE // notify the owner as soon as a person writes
+  REMINDER // remind the owner at runAt
+  SEND_MESSAGE // send a message on the owner's behalf (waits for the owner's ✅)
+}
+
+/// Tasks the owner gives the assistant in the admin chat ("Firdavs online bo'lsa xabar ber").
+model AssistantTask {
+  id                   Int               @id @default(autoincrement())
+  kind                 AssistantTaskKind
+  targetTelegramUserId BigInt?
+  targetLabel          String?
+  /// Reminder text or the message to send (ContentCipher ciphertext).
+  text                 String?
+  runAt                DateTime?
+  /// false = trigger once and finish; true = keep watching (with cooldown).
+  repeat               Boolean           @default(false)
+  cooldownMinutes      Int               @default(30)
+  active               Boolean           @default(true)
+  /// SEND_MESSAGE only: confirmed by the owner.
+  confirmed            Boolean           @default(false)
+  /// Last presence seen for WATCH_ONLINE (to notify only on an offline → online transition).
+  lastPresence         String?
+  triggerCount         Int               @default(0)
+  lastTriggeredAt      DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  @@index([active, kind])
+  @@index([targetTelegramUserId])
+  @@map("assistant_tasks")
+}

@@ -29,6 +29,8 @@ import type {
   SpeechRequest,
   SpeechResult,
   TokenUsage,
+  ToolCall,
+  ToolDefinition,
   TranscribeRequest,
   TranscribeResult,
 } from '../types.js';
@@ -71,7 +73,11 @@ export function resolveGeminiVoice(voice: string | undefined): string {
 }
 
 // ── wire types (only the fields we read) ──
-type GeminiRequestPart = { text: string } | { inline_data: { mime_type: string; data: string } };
+type GeminiRequestPart =
+  | { text: string }
+  | { inline_data: { mime_type: string; data: string } }
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: { result: unknown } } };
 interface GeminiContent {
   role: 'user' | 'model';
   parts: GeminiRequestPart[];
@@ -111,14 +117,14 @@ interface RunParams {
   timeoutMs?: number;
   label: string;
   allowEmpty?: boolean;
-  tools?: import('../types.js').ToolDefinition[];
+  tools?: ToolDefinition[];
 }
 
 interface RunResult {
   text: string;
   usage: TokenUsage;
   finishReason?: string;
-  toolCalls?: import('../types.js').ToolCall[];
+  toolCalls?: ToolCall[];
 }
 
 function stripModelsPrefix(model: string): string {
@@ -136,11 +142,11 @@ function usageOf(res: GeminiResponse): TokenUsage {
   };
 }
 
-function toGeminiContents(turns: ChatTurn[]): any[] {
+function toGeminiContents(turns: ChatTurn[]): GeminiContent[] {
   return normalizeTurns(turns).map((turn) => ({
     role: turn.role === 'assistant' ? 'model' : 'user',
     parts: turn.parts.map(
-      (p): any => {
+      (p): GeminiRequestPart => {
         if (p.type === 'text') return { text: p.text };
         if (p.type === 'image') return { inline_data: { mime_type: p.image.mimeType, data: p.image.data.toString('base64') } };
         if (p.type === 'tool_call') return { functionCall: { name: p.call.name, args: p.call.args } };
@@ -461,7 +467,7 @@ export class GeminiProvider implements AIProvider {
       .map((part) => part.text ?? '')
       .join('');
       
-    const toolCalls: import('../types.js').ToolCall[] = [];
+    const toolCalls: ToolCall[] = [];
     for (const part of (candidate.content?.parts ?? [])) {
       if (part.functionCall) {
         toolCalls.push({
