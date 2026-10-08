@@ -10,24 +10,30 @@ export interface KeyCheckEnv {
 }
 
 const TIMEOUT_MS = 15_000;
-/** Rough shape of each provider's keys: catches pasting a key for the wrong AI before any request. */
-const SHAPE: Record<AiChoice, RegExp> = {
-  gemini: /^AIza[0-9A-Za-z_-]{20,80}$/,
-  openai: /^sk-[A-Za-z0-9_-]{20,300}$/,
-  anthropic: /^sk-ant-[A-Za-z0-9_-]{20,300}$/,
-};
+/**
+ * Only a generic sanity check: key formats change (Gemini keys used to start with "AIza", newer AI
+ * Studio keys look like "AQ.Ab…"), so the provider itself decides whether a key is valid.
+ */
+const KEY_CHARS = /^[A-Za-z0-9._~+/=-]{20,400}$/;
 
-/** Trims what users typically paste around a key (quotes, spaces, "key:" prefixes). */
+/**
+ * Extracts the key from what users typically paste: quotes, "key:" prefixes, zero-width characters,
+ * or a sentence around it ("mana kalitim: AQ.Ab…") — then the longest whitespace-free token is used.
+ */
 export function cleanKey(raw: string): string {
-  return raw
+  const text = raw
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
     .trim()
-    .replace(/^(api[\s_-]?key|key|kalit|ключ)\s*[:=]\s*/i, '')
-    .replace(/^["'`«]+|["'`»]+$/g, '')
-    .trim();
+    .replace(/^(api[\s_-]?key|key|kalit|ключ)\s*[:=]\s*/i, '');
+  const tokens = text
+    .split(/\s+/)
+    .map((t) => t.replace(/^["'`«(<]+|["'`»)>.,;:!?]+$/g, ''))
+    .filter(Boolean);
+  return tokens.reduce((best, t) => (t.length > best.length ? t : best), '');
 }
 
-export function looksLikeKey(ai: AiChoice, key: string): boolean {
-  return SHAPE[ai].test(key);
+export function looksLikeKey(_ai: AiChoice, key: string): boolean {
+  return KEY_CHARS.test(key);
 }
 
 /**

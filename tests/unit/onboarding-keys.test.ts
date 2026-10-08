@@ -9,16 +9,24 @@ import { testEnv } from '../support/env.js';
 const env = { GEMINI_BASE_URL: 'https://g.test/v1beta', OPENAI_BASE_URL: 'https://o.test/v1', ANTHROPIC_BASE_URL: 'https://a.test/v1' };
 const GEMINI_KEY = `AIza${'x'.repeat(35)}`;
 const OPENAI_KEY = `sk-proj-${'y'.repeat(40)}`;
+/** Newer Google AI Studio key format (regression: these were rejected without any request). */
+const NEW_GEMINI_KEY = `AQ.Ab8RN6${'q'.repeat(44)}`;
 const respond = (status: number, body = '') => vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch;
 
 describe('API key check', () => {
-  it('cleans pasted keys and checks their shape per provider', () => {
+  it('extracts the key from what users paste (quotes, prefixes, sentences, zero-width characters)', () => {
     expect(cleanKey('  "AIzaABC"  ')).toBe('AIzaABC');
     expect(cleanKey('API key: sk-123')).toBe('sk-123');
+    expect(cleanKey(`mana kalitim: ${NEW_GEMINI_KEY}.`)).toBe(NEW_GEMINI_KEY);
+    expect(cleanKey(`\u200B${NEW_GEMINI_KEY}\uFEFF`)).toBe(NEW_GEMINI_KEY);
+  });
+
+  it('accepts any plausible key format — the provider decides (Gemini keys may be "AIza…" or the newer "AQ.…")', () => {
     expect(looksLikeKey('gemini', GEMINI_KEY)).toBe(true);
-    expect(looksLikeKey('openai', GEMINI_KEY)).toBe(false);
+    expect(looksLikeKey('gemini', NEW_GEMINI_KEY)).toBe(true);
     expect(looksLikeKey('anthropic', `sk-ant-${'z'.repeat(40)}`)).toBe(true);
-    expect(looksLikeKey('anthropic', OPENAI_KEY)).toBe(false);
+    expect(looksLikeKey('openai', 'short')).toBe(false);
+    expect(looksLikeKey('openai', 'has spaces in it but long enough')).toBe(false);
   });
 
   it('a key of the wrong shape is invalid without any request', async () => {
@@ -29,6 +37,7 @@ describe('API key check', () => {
 
   it('maps provider answers: 200 valid, 401/403 and Gemini 400 API_KEY_INVALID invalid, others unavailable', async () => {
     expect(await checkApiKey('gemini', GEMINI_KEY, env, respond(200))).toBe('valid');
+    expect(await checkApiKey('gemini', NEW_GEMINI_KEY, env, respond(200))).toBe('valid');
     expect(await checkApiKey('openai', OPENAI_KEY, env, respond(401))).toBe('invalid');
     expect(await checkApiKey('gemini', GEMINI_KEY, env, respond(400, '{"error":{"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}'))).toBe('invalid');
     expect(await checkApiKey('gemini', GEMINI_KEY, env, respond(429))).toBe('unavailable');
