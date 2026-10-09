@@ -94,7 +94,7 @@ export function registerAccess(kit: AdminKit): void {
     if (!deps.access || !isSuperAdmin(kit, ctx)) return denied;
     const result = await deps.access.approve(Number(id));
     const t = await deps.access.get(Number(id));
-    if (result === 'full') return { text: '⚠️ Joy qolmagan: MAX_TENANTS chegarasiga yetildi (Render free’da har bir userbot RAM oladi).', alert: true };
+    if (result === 'full') return { text: '⚠️ Joy qolmagan: MAX_TENANTS chegarasiga yetildi (Render → Environment’da oshirish mumkin).', alert: true };
     if (result === 'incomplete') return { text: '⚠️ Bu so‘rov tayyor emas: foydalanuvchi sozlashni tugatmagan yoki tasdiqlangan API kaliti yo‘q.', alert: true };
     if (result === 'not_found' || !t) return 'Topilmadi';
     setNotice(ctx, result === 'approved' ? `✅ ${escapeHtml(label(t))} ga ruxsat berildi.` : 'ℹ️ Allaqachon ruxsat berilgan.');

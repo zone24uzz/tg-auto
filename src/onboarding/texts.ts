@@ -34,7 +34,12 @@ interface Texts {
   rejected: string;
   suspended: string;
   cancelled: string;
-  approved: string;
+  /** After approval: how to connect the bot in Telegram Business (chat automation). */
+  approved: (bot: string) => string;
+  bizOn: string;
+  bizNoReply: string;
+  bizOff: string;
+  userbotOnly: string;
   sendText: string;
   full: string;
   reopened: string;
@@ -46,7 +51,7 @@ interface Texts {
 export const T: Record<Lang, Texts> = {
   uz: {
     welcome:
-      '👋 <b>Assalomu alaykum!</b>\n\nMen — Telegram uchun <b>AI avtojavob yordamchisi</b>. Siz band bo‘lganingizda akkauntingizga kelgan xabarlarga sizning uslubingizda javob beraman, shaxsiy savollarni esa sizga yuboraman.\n\nBoshlash uchun bir necha qadam sozlaymiz.',
+      '👋 <b>Assalomu alaykum!</b>\n\nMen — Telegram uchun <b>AI avtojavob yordamchisi</b>. Siz band bo‘lganingizda kontaktlaringiz yozgan xabarlarga sizning uslubingizda javob beraman, shaxsiy savollarni esa sizga yuboraman.\n\nMen akkauntingizga kirmayman: Telegram Business’ning «Chatbotlar / Автоматизация чатов» funksiyasi orqali ishlayman, shuning uchun <b>Telegram Premium</b> kerak.\n\nBoshlash uchun bir necha qadam sozlaymiz.',
     chooseLang: '🌐 Tilni tanlang:',
     chooseAi: '🤖 Qaysi AI ishlatasiz?\n\nAI kalitingiz faqat sizniki bo‘ladi va xarajatlar ham shu kalit hisobidan.',
     sendKey: (ai) =>
@@ -56,7 +61,7 @@ export const T: Record<Lang, Texts> = {
     keyCheckFailed: '⚠️ Kalitni hozir tekshirib bo‘lmadi (tarmoq yoki AI xizmati javob bermadi). Birozdan keyin qaytadan yuboring.',
     keyOk: (ai) => `✅ ${AI_LABEL[ai]} kaliti to‘g‘ri!`,
     consent:
-      '📋 <b>Qisqacha qanday ishlaydi</b>\n\n• Ruxsat berilgach, Telegram akkauntingizni QR kod orqali ulaysiz (/login).\n• Kontaktlaringiz yozganda AI siz uchun javob beradi; shaxsiy savollar (qayerdasiz, kim bilan, qarz…) sizga yuboriladi.\n• Hamma sozlamalar shu chatdagi menyuda: kimga javob berish, uslub, uzunlik, ovozli/rasmli xabarlar.\n• /tasks — shaxsiy assistent: “Ali online bo‘lsa ayt”, “soat 18 da eslat”.\n\n⚠️ <b>Muhim</b>\n• Akkaunt sessiyangiz, API kalitingiz va xabarlar serverda shifrlangan holda saqlanadi; server administratori texnik jihatdan ularga kira oladi.\n• Userbot ishlatish Telegram qoidalariga ko‘ra akkaunt cheklanishiga olib kelishi mumkin.\n• Istalgan payt /logout va maxfiylik menyusi orqali ma’lumotlaringizni o‘chirasiz.\n\nRozimisiz?',
+      '📋 <b>Qisqacha qanday ishlaydi</b>\n\n• Ruxsat berilgach, meni Telegram → Sozlamalar → Telegram Business → Chatbotlar (Автоматизация чатов) bo‘limiga qo‘shasiz — akkauntingizga kirish yoki parol kerak emas.\n• Kontaktlaringiz yozganda AI siz uchun javob beradi; shaxsiy savollar (qayerdasiz, kim bilan, qarz…) sizga yuboriladi.\n• Hamma sozlamalar shu chatdagi menyuda: kimga javob berish, uslub, uzunlik, ovozli/rasmli xabarlar.\n• /tasks — shaxsiy assistent: “Ali yozsa ayt”, “soat 18 da eslat”.\n\n⚠️ <b>Muhim</b>\n• Telegram Premium kerak; Telegram qoidasiga ko‘ra bot faqat oxirgi 24 soat ichida yozgan odamlarga javob bera oladi.\n• API kalitingiz va xabarlar serverda shifrlangan holda saqlanadi; server administratori texnik jihatdan ularga kira oladi.\n• Istalgan payt botni Chatbotlar bo‘limidan olib tashlab, maxfiylik menyusi orqali ma’lumotlaringizni o‘chirasiz.\n\nRozimisiz?',
     agree: '✅ Roziman — so‘rov yuborish',
     cancel: '❌ Bekor qilish',
     back: '⬅️ Orqaga',
@@ -67,16 +72,21 @@ export const T: Record<Lang, Texts> = {
     suspended: '⏸ Hisobingiz vaqtincha to‘xtatilgan. Administrator bilan bog‘laning.',
     cancelled: '❎ Bekor qilindi. Qaytadan boshlash uchun /start bosing.',
     approved:
-      '🎉 <b>Ruxsat berildi!</b>\n\nEndi Telegram akkauntingizni ulang: /login bosing va QR kodni telefoningizdagi Telegram → Sozlamalar → Qurilmalar → «Qurilmani ulash» orqali skanerlang.\n\nUlangach, menyu (/menu) orqali hamma narsani sozlaysiz. Yordam: /help',
+      (bot) =>
+      `🎉 <b>Ruxsat berildi!</b>\n\nEndi meni akkauntingizga ulang:\n1️⃣ Telegram → <b>Sozlamalar → Telegram Business → Chatbotlar</b> (ruschada: <i>Telegram для бизнеса → Автоматизация чатов</i>).\n2️⃣ Qidiruvga <b>@${bot}</b> deb yozing va qo‘shing.\n3️⃣ <b>«Xabarlarga javob berish»</b> ruxsatini yoqing va qaysi chatlarga javob berishimni tanlang.\n\nUlanishim bilan sizga xabar beraman. Keyin menyu (/menu) orqali hamma narsani sozlaysiz. Yordam: /help`,
     sendText: '✍️ Iltimos, kalitni matn ko‘rinishida yuboring.',
     full: '⚠️ Hozircha yangi foydalanuvchilar uchun joy qolmagan. Keyinroq urinib ko‘ring.',
     reopened: '🔄 Administrator sizga qaytadan so‘rov yuborishga ruxsat berdi. /start bosing va sozlang.',
     unavailable: '⚠️ Ro‘yxatdan o‘tish vaqtincha ishlamayapti. Keyinroq urinib ko‘ring.',
     tooMany: '⏳ Juda ko‘p urinish. 10 daqiqadan keyin qaytadan yuboring.',
+    bizOn: '🟢 Telegram Business orqali ulandim! Endi kontaktlaringiz yozganda javob beraman. Sozlamalar: /menu',
+    bizNoReply: '🟡 Ulandim, lekin menga «xabarlarga javob berish» ruxsati berilmagan. Telegram → Sozlamalar → Telegram Business → Chatbotlar bo‘limida ruxsatni yoqing.',
+    bizOff: '🔴 Telegram Business ulanishi o‘chirildi — avtojavoblar to‘xtadi.',
+    userbotOnly: '⚠️ Bu funksiya faqat akkaunt to‘liq ulangan (userbot) rejimda ishlaydi; Telegram Business orqali mavjud emas.',
   },
   ru: {
     welcome:
-      '👋 <b>Здравствуйте!</b>\n\nЯ — <b>AI-автоответчик для Telegram</b>. Пока вы заняты, я отвечаю на сообщения в вашем аккаунте в вашем стиле, а личные вопросы пересылаю вам.\n\nДавайте настроим всё за несколько шагов.',
+      '👋 <b>Здравствуйте!</b>\n\nЯ — <b>AI-автоответчик для Telegram</b>. Пока вы заняты, я отвечаю вашим контактам в вашем стиле, а личные вопросы пересылаю вам.\n\nЯ не захожу в ваш аккаунт: работаю через функцию Telegram Business «Автоматизация чатов», поэтому нужен <b>Telegram Premium</b>.\n\nДавайте настроим всё за несколько шагов.',
     chooseLang: '🌐 Выберите язык:',
     chooseAi: '🤖 Какой AI будете использовать?\n\nКлюч будет только вашим, расходы — тоже по вашему ключу.',
     sendKey: (ai) =>
@@ -86,7 +96,7 @@ export const T: Record<Lang, Texts> = {
     keyCheckFailed: '⚠️ Сейчас не удалось проверить ключ (сеть или AI-сервис не ответили). Отправьте его ещё раз чуть позже.',
     keyOk: (ai) => `✅ Ключ ${AI_LABEL[ai]} верный!`,
     consent:
-      '📋 <b>Коротко, как это работает</b>\n\n• После одобрения вы подключаете свой Telegram-аккаунт по QR-коду (/login).\n• Когда пишут ваши контакты, AI отвечает за вас; личные вопросы (где вы, с кем, деньги в долг…) приходят вам.\n• Все настройки — в меню этого чата: кому отвечать, стиль, длина, голосовые и фото.\n• /tasks — личный ассистент: «скажи, когда Али будет онлайн», «напомни в 18:00».\n\n⚠️ <b>Важно</b>\n• Сессия аккаунта, API-ключ и сообщения хранятся на сервере в зашифрованном виде; администратор сервера технически имеет к ним доступ.\n• Использование userbot может привести к ограничениям аккаунта по правилам Telegram.\n• В любой момент можно отключиться (/logout) и удалить данные в меню приватности.\n\nВы согласны?',
+      '📋 <b>Коротко, как это работает</b>\n\n• После одобрения вы добавляете меня в Telegram → Настройки → Telegram для бизнеса → Автоматизация чатов — входить в аккаунт и вводить пароль не нужно.\n• Когда пишут ваши контакты, AI отвечает за вас; личные вопросы (где вы, с кем, деньги в долг…) приходят вам.\n• Все настройки — в меню этого чата: кому отвечать, стиль, длина, голосовые и фото.\n• /tasks — личный ассистент: «скажи, когда напишет Али», «напомни в 18:00».\n\n⚠️ <b>Важно</b>\n• Нужен Telegram Premium; по правилам Telegram бот может отвечать только тем, кто писал за последние 24 часа.\n• API-ключ и сообщения хранятся на сервере в зашифрованном виде; администратор сервера технически имеет к ним доступ.\n• В любой момент можно убрать бота из «Автоматизации чатов» и удалить данные в меню приватности.\n\nВы согласны?',
     agree: '✅ Согласен — отправить заявку',
     cancel: '❌ Отмена',
     back: '⬅️ Назад',
@@ -97,16 +107,21 @@ export const T: Record<Lang, Texts> = {
     suspended: '⏸ Ваш доступ временно приостановлен. Свяжитесь с администратором.',
     cancelled: '❎ Отменено. Чтобы начать заново, нажмите /start.',
     approved:
-      '🎉 <b>Доступ одобрен!</b>\n\nТеперь подключите аккаунт: нажмите /login и отсканируйте QR-код в Telegram на телефоне → Настройки → Устройства → «Подключить устройство».\n\nПосле подключения всё настраивается через меню (/menu). Помощь: /help',
+      (bot) =>
+      `🎉 <b>Доступ одобрен!</b>\n\nТеперь подключите меня к аккаунту:\n1️⃣ Telegram → <b>Настройки → Telegram для бизнеса → Автоматизация чатов</b>.\n2️⃣ Введите <b>@${bot}</b> и добавьте.\n3️⃣ Включите разрешение <b>«Отвечать на сообщения»</b> и выберите, в каких чатах мне отвечать.\n\nКак только подключите — я сообщу. Дальше всё настраивается через меню (/menu). Помощь: /help`,
     sendText: '✍️ Пожалуйста, отправьте ключ текстом.',
     full: '⚠️ Сейчас нет свободных мест для новых пользователей. Попробуйте позже.',
     reopened: '🔄 Администратор разрешил подать заявку заново. Нажмите /start и настройте всё ещё раз.',
     unavailable: '⚠️ Регистрация временно недоступна. Попробуйте позже.',
     tooMany: '⏳ Слишком много попыток. Попробуйте снова через 10 минут.',
+    bizOn: '🟢 Подключено через Telegram Business! Теперь я отвечаю вашим контактам. Настройки: /menu',
+    bizNoReply: '🟡 Подключено, но у меня нет разрешения «Отвечать на сообщения». Включите его: Telegram → Настройки → Telegram для бизнеса → Автоматизация чатов.',
+    bizOff: '🔴 Подключение Telegram Business отключено — автоответы остановлены.',
+    userbotOnly: '⚠️ Эта функция работает только при полном подключении аккаунта (userbot); через Telegram Business она недоступна.',
   },
   en: {
     welcome:
-      '👋 <b>Hello!</b>\n\nI’m an <b>AI auto-responder for Telegram</b>. While you’re busy I reply to messages on your account in your style and forward personal questions to you.\n\nLet’s set things up in a few steps.',
+      '👋 <b>Hello!</b>\n\nI’m an <b>AI auto-responder for Telegram</b>. While you’re busy I reply to your contacts in your style and forward personal questions to you.\n\nI never log into your account: I work through Telegram Business “Chatbots” (chat automation), so <b>Telegram Premium</b> is required.\n\nLet’s set things up in a few steps.',
     chooseLang: '🌐 Choose your language:',
     chooseAi: '🤖 Which AI will you use?\n\nThe key stays yours, and usage is billed to it.',
     sendKey: (ai) =>
@@ -116,7 +131,7 @@ export const T: Record<Lang, Texts> = {
     keyCheckFailed: '⚠️ Couldn’t check the key right now (network or AI service did not respond). Please send it again a bit later.',
     keyOk: (ai) => `✅ The ${AI_LABEL[ai]} key is valid!`,
     consent:
-      '📋 <b>How it works, briefly</b>\n\n• After approval you connect your Telegram account with a QR code (/login).\n• When your contacts write, the AI replies for you; personal questions (where are you, with whom, lending money…) come to you.\n• Everything is configured in this chat’s menu: whom to answer, style, length, voice and photos.\n• /tasks — personal assistant: “tell me when Ali is online”, “remind me at 18:00”.\n\n⚠️ <b>Important</b>\n• Your account session, API key and messages are stored encrypted on the server; the server administrator can technically access them.\n• Using a userbot may get an account restricted under Telegram’s rules.\n• You can disconnect (/logout) and delete your data from the privacy menu at any time.\n\nDo you agree?',
+      '📋 <b>How it works, briefly</b>\n\n• After approval you add me in Telegram → Settings → Telegram Business → Chatbots — no account login or password needed.\n• When your contacts write, the AI replies for you; personal questions (where are you, with whom, lending money…) come to you.\n• Everything is configured in this chat’s menu: whom to answer, style, length, voice and photos.\n• /tasks — personal assistant: “tell me when Ali writes”, “remind me at 18:00”.\n\n⚠️ <b>Important</b>\n• Telegram Premium is required; by Telegram’s rules the bot can only reply to people who wrote within the last 24 hours.\n• Your API key and messages are stored encrypted on the server; the server administrator can technically access them.\n• You can remove the bot from Chatbots and delete your data from the privacy menu at any time.\n\nDo you agree?',
     agree: '✅ I agree — send request',
     cancel: '❌ Cancel',
     back: '⬅️ Back',
@@ -127,12 +142,17 @@ export const T: Record<Lang, Texts> = {
     suspended: '⏸ Your access is temporarily suspended. Please contact the administrator.',
     cancelled: '❎ Cancelled. Press /start to begin again.',
     approved:
-      '🎉 <b>Access approved!</b>\n\nNow connect your account: press /login and scan the QR code in Telegram on your phone → Settings → Devices → “Link Desktop Device”.\n\nOnce connected, configure everything from the menu (/menu). Help: /help',
+      (bot) =>
+      `🎉 <b>Access approved!</b>\n\nNow connect me to your account:\n1️⃣ Telegram → <b>Settings → Telegram Business → Chatbots</b>.\n2️⃣ Type <b>@${bot}</b> and add it.\n3️⃣ Turn on the <b>“Reply to messages”</b> permission and choose which chats I should answer.\n\nI’ll let you know as soon as I’m connected. Then configure everything from the menu (/menu). Help: /help`,
     sendText: '✍️ Please send the key as text.',
     full: '⚠️ There are no free places for new users right now. Please try again later.',
     reopened: '🔄 The administrator allowed you to apply again. Press /start and set things up.',
     unavailable: '⚠️ Sign-up is temporarily unavailable. Please try again later.',
     tooMany: '⏳ Too many attempts. Please try again in 10 minutes.',
+    bizOn: '🟢 Connected via Telegram Business! I’ll now reply to your contacts. Settings: /menu',
+    bizNoReply: '🟡 Connected, but I don’t have the “Reply to messages” permission. Turn it on in Telegram → Settings → Telegram Business → Chatbots.',
+    bizOff: '🔴 The Telegram Business connection was turned off — auto-replies stopped.',
+    userbotOnly: '⚠️ This feature needs a fully connected account (userbot); it is not available via Telegram Business.',
   },
 };
 

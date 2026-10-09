@@ -10,6 +10,8 @@ import type { ContentCipher } from '../security/crypto.js';
 import { cb } from '../telegram/admin/callback-data.js';
 import { escapeHtml } from '../telegram/common/html.js';
 import { formatDateTime } from '../utils/time.js';
+import { currentTenantOrNull } from '../tenancy/context.js';
+import { T } from '../onboarding/texts.js';
 import { parseOwnerIntent, type OwnerIntent } from './intent.js';
 import { PersonResolver, type PersonCandidate } from './resolver.js';
 
@@ -205,7 +207,7 @@ export class OwnerAssistant implements AssistantPort {
     if (!intent.person) return { text: `👤 Kim haqida gap ketyapti? Ismini yoki @username ni yozing.${intent.reply ? `\n${escapeHtml(intent.reply)}` : ''}` };
     if (kind === 'SEND_MESSAGE' && !intent.text) return { text: `📤 ${escapeHtml(intent.person)} ga nima deb yozay? Masalan: <i>${escapeHtml(intent.person)}ga yoz: salom</i>` };
     if ((kind === 'WATCH_ONLINE' || kind === 'SEND_MESSAGE') && !this.userbot?.isReady())
-      return { text: '⚠️ Buning uchun userbot ulangan bo‘lishi kerak. /login orqali ulang.' };
+      return { text: T[currentTenantOrNull()?.language ?? 'uz'].userbotOnly };
     if (!(await this.hasRoom())) return { text: `⚠️ Faol vazifalar juda ko‘p (${MAX_ACTIVE_TASKS}). Avval keraksizlarini o‘chiring: /tasks` };
 
     const found = await this.resolver.resolve(intent.person);

@@ -4,7 +4,7 @@ import type { Tenant } from '../../generated/prisma/client.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
 import type { DownloadedFile, DownloadOptions, FileDownloader } from '../../media/telegram-file.js';
-import { currentTenantOrNull, runAsSystem } from '../../tenancy/context.js';
+import { currentTenantOrNull } from '../../tenancy/context.js';
 import type { TenantService } from '../../tenancy/tenant.service.js';
 import type { UserbotTransport } from '../main/sender.js';
 
@@ -28,7 +28,7 @@ export interface UserbotManagerDeps {
 }
 
 /**
- * One MTProto userbot per workspace. Each runtime is created on demand (/login, or at startup when a
+ * MTProto userbot runtimes (in practice only the super-admin's: other workspaces use Telegram Business). Each runtime is created on demand (/login, or at startup when a
  * stored session exists) and every event it produces runs in its workspace's tenant scope. The admin
  * commands (/login, /logout, /userbot), media downloads and assistant lookups are routed to the
  * runtime of the workspace the current update belongs to.
@@ -42,7 +42,8 @@ export class UserbotManager {
   constructor(private readonly d: UserbotManagerDeps) {
     this.composer.use(async (ctx, next) => {
       const scope = currentTenantOrNull();
-      if (!scope) return next();
+      // Only the super-admin logs an account in (/login); other workspaces use Telegram Business.
+      if (!scope || scope.ownerTelegramUserId !== this.d.superAdminId) return next();
       const tenant = await this.d.tenants.byId(scope.tenantId);
       if (!tenant || tenant.status !== 'ACTIVE') return next();
       return this.forTenant(tenant).composer.middleware()(ctx, next);
@@ -91,15 +92,12 @@ export class UserbotManager {
   }
 
   /**
-   * Starts the super-admin's userbot (it asks for /login when needed) and every active workspace
-   * that already has a stored session; other workspaces start when their owner runs /login.
+   * Starts the super-admin's userbot (it asks for /login when needed). Other workspaces connect through
+   * Telegram Business (no account login), so no MTProto client is ever started for them.
    */
   async startAll(): Promise<void> {
-    const withSession = new Set(
-      (await runAsSystem(() => this.d.base.db.userbotSession.findMany({ select: { tenantId: true } }))).map((r) => r.tenantId),
-    );
     for (const tenant of await this.d.tenants.listActive()) {
-      if (tenant.telegramUserId !== this.d.superAdminId && !withSession.has(tenant.id)) continue;
+      if (tenant.telegramUserId !== this.d.superAdminId) continue;
       const runtime = this.forTenant(tenant);
       await this.d.tenants.run(tenant, () => runtime.start()).catch((error: unknown) =>
         log.error({ tenantId: tenant.id, error: describeError(error) }, 'userbot start failed'),

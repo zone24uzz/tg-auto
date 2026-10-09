@@ -94,7 +94,7 @@ d('onboarding + access (real PostgreSQL)', () => {
       checkKey: async () => verdict,
     });
     settings = new SettingsService(tdb.db, buildDefaultSettings(testEnv()), new AuditService(tdb.db));
-    access = new AccessService({ db: tdb.db, api: api as never, tenants, settings, superAdminId: SUPER, maxTenants: 1 });
+    access = new AccessService({ db: tdb.db, api: api as never, tenants, settings, superAdminId: SUPER, maxTenants: 1, botUsername: () => 'kama_message_bot' });
   });
   afterAll(async () => {
     await tdb?.drop();
@@ -153,6 +153,10 @@ d('onboarding + access (real PostgreSQL)', () => {
     });
     expect(adminMessages.at(-1)!.chatId).toBe(USER);
     expect(adminMessages.at(-1)!.text).toContain('Ruxsat berildi');
+    // Business connection steps (no account login for workspace owners).
+    expect(adminMessages.at(-1)!.text).toContain('@kama_message_bot');
+    expect(adminMessages.at(-1)!.text).toContain('Telegram Business');
+    expect(adminMessages.at(-1)!.text).not.toContain('/login');
     expect(await access.approve(afterKey.id)).toBe('already');
   });
 

@@ -5,6 +5,7 @@ import type { TelegramConnection } from '../../generated/prisma/client.js';
 import type { EventLog } from '../../logging/events.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
+import { T } from '../../onboarding/texts.js';
 import { currentTenant, currentTenantId, currentTenantOrNull } from '../../tenancy/context.js';
 import type { AdminNotifier } from '../admin/notifier.js';
 
@@ -60,11 +61,8 @@ export class ConnectionService {
     this.cache.set(this.key(conn.id), { conn, at: Date.now() });
     const changed = !before || before.isEnabled !== conn.isEnabled || before.canReply !== conn.canReply;
     if (changed) {
-      const status = !conn.isEnabled
-        ? '🔴 Telegram Business ulanishi o‘chirildi. Avtojavoblar to‘xtadi.'
-        : conn.canReply
-          ? '🟢 Telegram Business ulandi. Bot xabarlarni qabul qiladi va javob bera oladi.'
-          : '🟡 Telegram Business ulandi, lekin botga «javob berish» huquqi berilmagan. Telegram → Sozlamalar → Telegram Business → Chatbotlar bo‘limida ruxsat bering.';
+      const t = T[tenant.language];
+      const status = !conn.isEnabled ? t.bizOff : conn.canReply ? t.bizOn : t.bizNoReply;
       await this.notifier.text(status);
       await this.events.info('connections', `connection ${conn.isEnabled ? 'enabled' : 'disabled'}, canReply=${conn.canReply}`);
     }

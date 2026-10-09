@@ -138,8 +138,8 @@ export const envSchema = z
 
     WORKER_MODE: z.enum(['embedded', 'separate']).default('embedded'),
     WORKER_CONCURRENCY_TEXT: int(4, 1, 64),
-    /** Active workspaces besides the super-admin's (each one runs its own userbot: ~40–60 MB RAM). */
-    MAX_TENANTS: int(5, 0, 200),
+    /** Active workspaces besides the super-admin's (they connect through Telegram Business: no userbot each). */
+    MAX_TENANTS: int(50, 0, 1000),
     WORKER_CONCURRENCY_MEDIA: int(2, 1, 32),
   })
   .superRefine((env, ctx) => {

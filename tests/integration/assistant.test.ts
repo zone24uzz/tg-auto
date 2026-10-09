@@ -178,7 +178,7 @@ d('owner assistant (real PostgreSQL)', () => {
   it('online watch needs the userbot', async () => {
     userbot.state.ready = false;
     say(intent({ action: 'watch_online', person: 'Firdavs' }));
-    expect((await assistant.handleText('Firdavs kirsa ayt')).text).toContain('/login');
+    expect((await assistant.handleText('Firdavs kirsa ayt')).text).toContain('userbot');
   });
 
   it('unknown person and AI failure give a helpful answer', async () => {

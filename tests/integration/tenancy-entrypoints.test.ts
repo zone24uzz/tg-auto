@@ -54,7 +54,7 @@ d('tenancy entry points without the test fallback scope (real PostgreSQL)', () =
     expect(tenant?.id).toBe(other.id);
   });
 
-  it('userbot manager starts the super-admin and every workspace with a stored session', async () => {
+  it('userbot manager starts only the super-admin (other workspaces use Telegram Business)', async () => {
     const started: bigint[] = [];
     const manager = new UserbotManager({
       base: { db: tdb.db } as never,
@@ -64,7 +64,15 @@ d('tenancy entry points without the test fallback scope (real PostgreSQL)', () =
       setTransport: () => undefined,
     });
     await manager.startAll();
-    expect(started.sort()).toEqual([5001n, 5002n]);
+    expect(started).toEqual([5001n]);
+
+    // Another workspace's /login never reaches a userbot runtime.
+    const next = vi.fn(async () => undefined);
+    await runWithTenant({ tenantId: other.id, ownerTelegramUserId: 5002n, language: 'uz' }, () =>
+      manager.composer.middleware()({ update: { update_id: 1 } } as never, next),
+    );
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(manager.current()).toBeNull();
   });
 
   it('the super-admin’s logs include system-wide events, other workspaces only their own', async () => {

@@ -39,8 +39,10 @@ export interface AccessDeps {
   tenants: TenantService;
   settings: SettingsService;
   superAdminId: bigint;
-  /** Active workspaces besides the super-admin's (each runs its own userbot). */
+  /** Active workspaces besides the super-admin's (they connect through Telegram Business). */
   maxTenants: number;
+  /** The bot's @username (without @), shown in the Telegram Business connection steps. */
+  botUsername: () => string;
   /** After approval (e.g. publish the "/" menu for the new owner). */
   onApproved?: (tenant: Tenant) => Promise<void>;
   /** After rejection / revocation (e.g. stop the workspace's userbot). */
@@ -110,7 +112,7 @@ export class AccessService {
         await this.d.settings.set('mediaTooLargeText', defaultMediaTooLargeReply(name));
       }
     });
-    await this.tell(updated, T[langOf(updated.language)].approved);
+    await this.tell(updated, T[langOf(updated.language)].approved(this.d.botUsername()));
     await this.d.onApproved?.(updated).catch((error: unknown) => log.warn({ error: describeError(error) }, 'post-approval hook failed'));
     return 'approved';
   }

@@ -64,7 +64,7 @@ async function main(): Promise<void> {
 
   // The owner's "/" command menu, (re)published per workspace owner so it always matches the code.
   const publishMenu = (ownerId: bigint) =>
-    publishAdminCommands(adminApi, ownerId, { userbot: isUserbot }).catch((error: unknown) =>
+    publishAdminCommands(adminApi, ownerId, { userbot: isUserbot && ownerId === env.ADMIN_TELEGRAM_USER_ID }).catch((error: unknown) =>
       logger.warn({ err: error }, 'could not publish the admin command menu'),
     );
 
@@ -75,6 +75,7 @@ async function main(): Promise<void> {
     settings: c.settings,
     superAdminId: env.ADMIN_TELEGRAM_USER_ID,
     maxTenants: env.MAX_TENANTS,
+    botUsername: () => (c.adminBot ?? c.mainBot).botInfo.username,
     onApproved: (tenant) => publishMenu(tenant.telegramUserId),
     onRevoked: async (tenant) => {
       await userbots?.stop(tenant.id);
