@@ -59,7 +59,8 @@ describe('admin main menu', () => {
     const { deps } = baseDeps(testSettings({ pausedUntil: until }));
     const { bot, calls } = createTestBot(deps);
     await bot.handleUpdate(messageUpdate(ADMIN_ID, '/menu'));
-    expect(sentTexts(calls)).toMatch(/Status: 🟡 PAUSED until \d\d:\d\d/);
+    // Near midnight the pause ends tomorrow and the date is shown before the time.
+    expect(sentTexts(calls)).toMatch(/Status: 🟡 PAUSED until (?:[^\n]* )?\d\d:\d\d/);
   });
 });
 

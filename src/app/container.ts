@@ -2,7 +2,9 @@ import type { Bot } from 'grammy';
 import { DefaultAiRouter } from '../ai/router/ai-router.js';
 import { TenantLimiter } from '../ai/router/global-limiter.js';
 import { ProviderRegistry } from '../ai/registry.js';
-import { OwnerAssistant } from '../assistant/assistant.service.js';
+import { ASSISTANT_ROUTE, OwnerAssistant } from '../assistant/assistant.service.js';
+import { ChannelService } from '../channels/channel.service.js';
+import { cb } from '../telegram/admin/callback-data.js';
 import { AuditService } from '../audit/audit.service.js';
 import { MessageClassifier } from '../classifiers/classifier.js';
 import type { Env } from '../config/env.js';
@@ -139,6 +141,14 @@ export function buildContainer(env: Env) {
   const stats = new StatsService(db, env.TIMEZONE);
   const privacy = new PrivacyService(db, storage, audit, cipher.enabled);
   const cleanup = new CleanupService(db, queue, storage, env.MEDIA_TMP_DIR, events);
+  const channels = new ChannelService({
+    db,
+    ai,
+    cipher,
+    api: (adminBot ?? mainBot).api,
+    notifier,
+    button: (verb, id) => cb(ASSISTANT_ROUTE, 'cp', verb, id),
+  });
   const assistant = new OwnerAssistant({
     db,
     ai,
@@ -147,6 +157,7 @@ export function buildContainer(env: Env) {
     queue,
     sendAsOwner: (chatId, text) => sender.sendAsOwner(chatId, text),
     timezone: env.TIMEZONE,
+    channels,
     events,
   });
   const business = new BusinessHandlers({
@@ -199,6 +210,7 @@ export function buildContainer(env: Env) {
     business,
     assistant,
     tenants,
+    channels,
   };
 }
 

@@ -10,6 +10,8 @@ export const ASSISTANT_ACTIONS = [
   'send_message',
   'list_tasks',
   'cancel_task',
+  'channel_post',
+  'list_channels',
   'help',
   'chat',
   'unknown',
@@ -27,6 +29,10 @@ export interface OwnerIntent {
   taskId?: number;
   /** chat only: the answer needs current information from the internet. */
   needsSearch: boolean;
+  /** channel_post: which channel (title / @username) when the owner names one. */
+  channel?: string;
+  /** channel_post: `text` is the exact post to publish as-is (not instructions to write one). */
+  exact: boolean;
   /** The answer for `chat` (the owner's question/conversation), or a short clarification otherwise. */
   reply: string;
 }
@@ -41,12 +47,14 @@ const INTENT_SCHEMA = {
     text: { type: 'string', description: 'reminder text or the exact message to send; empty otherwise' },
     task_id: { type: 'integer', description: 'task number for cancel_task; 0 if none' },
     reply: { type: 'string', description: 'for chat: the full helpful answer; otherwise one short sentence. Plain text, no markdown' },
+    channel: { type: 'string', description: 'channel_post: channel title or @username if the owner named one; empty otherwise' },
+    exact: { type: 'boolean', description: 'channel_post: true only when the owner gave the exact post text to publish as-is' },
     needs_search: {
       type: 'boolean',
       description: 'chat only: true when a correct answer needs current information from the internet (news, prices, exchange rates, weather, sports, recent events, “today/latest”)',
     },
   },
-  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search'],
+  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search', 'channel', 'exact'],
 } as const;
 
 const rawSchema = z.object({
@@ -58,6 +66,8 @@ const rawSchema = z.object({
   task_id: z.number().int().min(0).optional().default(0),
   reply: z.string().max(3000).optional().default(''),
   needs_search: z.boolean().optional().default(false),
+  channel: z.string().max(100).optional().default(''),
+  exact: z.boolean().optional().default(false),
 });
 
 function systemPrompt(now: Date, timezone: string): string {
@@ -74,6 +84,8 @@ function systemPrompt(now: Date, timezone: string): string {
     '- send_message: send a message to a person on the owner\'s behalf ("X ga yoz: ...", "X ga ayt ..."). text = the message exactly as it should be sent, in the language the owner used, without quotes.',
     '- list_tasks: show the active tasks ("vazifalar", "kuzatuvlar", "nima kuzatyapsan").',
     '- cancel_task: stop a task ("X kuzatuvini o\'chir" → person; "3-vazifani o\'chir" → task_id).',
+    '- channel_post: write/publish a post in the owner’s Telegram channel ("kanalga post yoz: …", "kanalga joyla: …", "написать пост в канал"). text = the topic/instructions, or the exact text when the owner gave it (then exact=true); channel = the channel name if given.',
+    '- list_channels: show the connected channels ("kanallarim", "qaysi kanallar ulangan").',
     '- help: the owner asks what you can do.',
     '- chat: anything else — a question, a request for advice, text to write/translate/fix, small talk. Answer it yourself in `reply`: helpful, accurate, concise (usually 1–6 sentences, longer only if asked), in the language the owner wrote in, plain text without markdown. Do not invent facts about the owner’s contacts.',
     'person = the name, @username or numeric id exactly as written, without Uzbek case suffixes (Firdavsga → Firdavs, Alini → Ali). repeat = true only for "har safar / doim / always / har gal", otherwise false.',
@@ -115,5 +127,7 @@ export function normalizeIntent(raw: z.input<typeof rawSchema>, now: Date): Owne
     ...(r.task_id > 0 ? { taskId: r.task_id } : {}),
     reply: r.reply.trim(),
     needsSearch: r.action === 'chat' && r.needs_search,
+    ...(r.channel.trim() ? { channel: r.channel.trim() } : {}),
+    exact: r.action === 'channel_post' && r.exact,
   };
 }

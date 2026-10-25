@@ -126,9 +126,9 @@ async function main(): Promise<void> {
     business: c.business,
     connections: c.connections,
     tenants: c.tenants,
-    ...(c.adminBot ? {} : { admin: adminStack }),
+    ...(c.adminBot ? {} : { admin: adminStack, onMyChatMember: (u) => c.channels.onMembership(u) }),
   });
-  if (c.adminBot) configureAdminBot(c.adminBot, c.db, adminStack, c.tenants);
+  if (c.adminBot) configureAdminBot(c.adminBot, c.db, adminStack, c.tenants, (u) => c.channels.onMembership(u));
 
   await c.mainBot.init();
   await c.adminBot?.init();

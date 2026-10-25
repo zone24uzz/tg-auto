@@ -27,6 +27,8 @@ function businessConnectionIdOf(update: Update): string | undefined {
  */
 export async function resolveUpdateTenant(deps: { db: Db; tenants: TenantService; api?: Api }, update: Update): Promise<Tenant | null> {
   if (update.business_connection) return deps.tenants.activeByTelegramUserId(BigInt(update.business_connection.user.id));
+  // The bot was added to / removed from a channel: the workspace of the person who did it.
+  if (update.my_chat_member) return deps.tenants.activeByTelegramUserId(BigInt(update.my_chat_member.from.id));
 
   const connectionId = businessConnectionIdOf(update);
   if (connectionId) {

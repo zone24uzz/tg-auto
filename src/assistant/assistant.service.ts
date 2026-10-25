@@ -1,5 +1,6 @@
 import type { PresenceState, UserbotAssistantApi } from '../app/userbot-contract.js';
 import type { AiRouter } from '../ai/router/types.js';
+import type { ChannelService } from '../channels/channel.service.js';
 import type { Db } from '../database/client.js';
 import type { AssistantTask, AssistantTaskKind } from '../generated/prisma/client.js';
 import type { EventLog } from '../logging/events.js';
@@ -21,6 +22,8 @@ export const ASSISTANT_ROUTE = 'as';
 const DEFAULT_COOLDOWN_MIN = 30;
 const DRAFT_TTL_MS = 24 * 3_600_000;
 const MAX_ACTIVE_TASKS = 50;
+/** How long a pending channel choice / change request waits for the owner. */
+const PENDING_TTL_MS = 15 * 60_000;
 
 export interface AssistantButton {
   label: string;
@@ -35,7 +38,7 @@ export interface AssistantReply {
 }
 
 /** What the assistant is doing right now (shown live in the admin chat). */
-export type AssistantStatus = 'thinking' | 'searching' | 'database';
+export type AssistantStatus = 'thinking' | 'searching' | 'database' | 'writing';
 
 /** The admin UI depends only on this. */
 export interface AssistantPort {
@@ -52,6 +55,8 @@ export interface AssistantDeps {
   /** Sends text through the owner's account (userbot). */
   sendAsOwner: (chatId: bigint, text: string) => Promise<number>;
   timezone: string;
+  /** Channel posts (optional: absent → the assistant says channels are unavailable). */
+  channels?: ChannelService;
   events?: Pick<EventLog, 'info' | 'warn'>;
   now?: () => Date;
 }
@@ -70,6 +75,7 @@ const HELP = [
   '• <i>Soat 18:00 da onamga qo‘ng‘iroq qilishni eslat</i>',
   '• <i>Firdavsga yoz: ertaga 10 da uchrashamiz</i> (yuborishdan oldin tasdiqlaysiz)',
   '• <i>Vazifalarim</i> yoki /tasks · <i>Firdavs kuzatuvini o‘chir</i>',
+  '• <i>Kanalga post yoz: yangi xizmatimiz haqida</i> (joylashdan oldin tasdiqlaysiz) · <i>Kanallarim</i>',
 ].join('\n');
 
 /**
@@ -78,6 +84,10 @@ const HELP = [
  * Only the owner can reach this (the admin guard runs first); contacts never trigger actions.
  */
 export class OwnerAssistant implements AssistantPort {
+  /** Per workspace: a draft waiting for the owner's change request (after ✏️), or a post waiting for a channel choice. */
+  private readonly pendingRevision = new Map<number, { postId: number; at: number }>();
+  private readonly pendingChannel = new Map<number, { instructions: string; exact: boolean; at: number }>();
+
   /** Resolves the userbot of the workspace being served (one MTProto account per workspace). */
   private userbotOf: () => UserbotAssistantApi | null = () => null;
   private readonly resolver: PersonResolver;
@@ -107,6 +117,14 @@ export class OwnerAssistant implements AssistantPort {
       onStatus('database');
       return this.contactCard(lookup[1]!);
     }
+    // After ✏️ on a channel draft, the next message is the change request.
+    const tenantKey = currentTenantOrNull()?.tenantId ?? 0;
+    const revision = this.pendingRevision.get(tenantKey);
+    if (revision && this.d.channels && Date.now() - revision.at < PENDING_TTL_MS) {
+      this.pendingRevision.delete(tenantKey);
+      onStatus('writing');
+      return this.d.channels.revise(revision.postId, text);
+    }
     onStatus('thinking');
     let intent: OwnerIntent;
     try {
@@ -127,6 +145,10 @@ export class OwnerAssistant implements AssistantPort {
       case 'send_message':
         onStatus('database');
         return this.personTask(intent);
+      case 'list_channels':
+        return this.d.channels ? this.d.channels.listReply() : { text: '📢 Kanallar bu yerda yoqilmagan.' };
+      case 'channel_post':
+        return this.channelPost(intent.text ?? text, intent.exact, intent.channel, onStatus);
       case 'help':
         return { text: HELP };
       default:
@@ -137,6 +159,58 @@ export class OwnerAssistant implements AssistantPort {
         }
         // chat / unknown: the AI's own answer (help only when it had nothing to say).
         return { text: intent.reply ? escapeHtml(intent.reply) : HELP };
+    }
+  }
+
+  private async channelPost(
+    instructions: string,
+    exact: boolean,
+    channelQuery: string | undefined,
+    onStatus: (status: AssistantStatus) => void,
+  ): Promise<AssistantReply> {
+    const channels = this.d.channels;
+    if (!channels) return { text: '📢 Kanallar bu yerda yoqilmagan.' };
+    const { channel, choices } = await channels.resolve(channelQuery);
+    if (!channel) {
+      if (choices.length === 0) return { text: channels.howToConnect() };
+      this.pendingChannel.set(currentTenantOrNull()?.tenantId ?? 0, { instructions, exact, at: Date.now() });
+      return {
+        text: '📢 Qaysi kanalga?',
+        buttons: [...choices.map((c) => [{ label: c.title.slice(0, 40), data: cb(ASSISTANT_ROUTE, 'cp', 'pick', c.id) }]), [{ label: '❌ Bekor', data: cb(ASSISTANT_ROUTE, 'cp', 'drop', 0) }]],
+      };
+    }
+    if (!exact) onStatus('writing');
+    return channels.draft(channel, instructions, exact);
+  }
+
+  private async channelAction(verb: string | undefined, id: number): Promise<AssistantReply> {
+    const channels = this.d.channels;
+    if (!channels || !Number.isInteger(id)) return { text: 'ℹ️ Bu tugma eskirgan.' };
+    const tenantKey = currentTenantOrNull()?.tenantId ?? 0;
+    switch (verb) {
+      case 'ok':
+        return channels.publish(id);
+      case 're':
+        return channels.regenerate(id);
+      case 'no':
+        return channels.cancel(id);
+      case 'ed':
+        if (!(await channels.isDraft(id))) return { text: 'ℹ️ Bu post loyihasi eskirgan.' };
+        this.pendingRevision.set(tenantKey, { postId: id, at: Date.now() });
+        return { text: '✏️ Qanday o‘zgartiray? Yozing, masalan: <i>qisqaroq qil</i>, <i>oxiriga narxni qo‘sh</i>, <i>rasmiyroq ohangda</i>.' };
+      case 'pick': {
+        const pending = this.pendingChannel.get(tenantKey);
+        this.pendingChannel.delete(tenantKey);
+        if (!pending || Date.now() - pending.at > PENDING_TTL_MS) return { text: 'ℹ️ Bu so‘rov eskirgan. Qaytadan yozing.' };
+        const channel = (await channels.list()).find((c) => c.id === id && c.canPost);
+        if (!channel) return { text: 'ℹ️ Bu kanal endi ulanmagan.' };
+        return channels.draft(channel, pending.instructions, pending.exact);
+      }
+      case 'drop':
+        this.pendingChannel.delete(tenantKey);
+        return { text: '❌ Bekor qilindi.' };
+      default:
+        return { text: 'ℹ️ Bu tugma eskirgan.' };
     }
   }
 
@@ -204,6 +278,7 @@ export class OwnerAssistant implements AssistantPort {
 
   async handleAction(args: string[]): Promise<AssistantReply> {
     const [verb, a, b] = args;
+    if (verb === 'cp') return this.channelAction(a, Number(b));
     const id = Number(a);
     switch (verb) {
       case 'list':

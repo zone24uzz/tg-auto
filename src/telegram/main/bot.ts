@@ -1,5 +1,6 @@
 import { autoRetry } from '@grammyjs/auto-retry';
 import { Bot, type Composer, type Context } from 'grammy';
+import type { ChatMemberUpdated } from 'grammy/types';
 import type { Db } from '../../database/client.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
@@ -19,9 +20,10 @@ export const MAIN_ALLOWED_UPDATES = [
   'business_message',
   'edited_business_message',
   'deleted_business_messages',
+  'my_chat_member',
 ] as const;
 
-export const ADMIN_ALLOWED_UPDATES = ['message', 'callback_query'] as const;
+export const ADMIN_ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'] as const;
 
 export function createBot(token: string, apiRoot: string): Bot {
   const bot = new Bot(token, { client: { apiRoot } });
@@ -42,6 +44,8 @@ export function configureMainBot(p: {
   connections: ConnectionService;
   tenants: TenantService;
   admin?: Composer<Context>;
+  /** The bot was added to / removed from a channel (single-bot mode: the main bot posts). */
+  onMyChatMember?: (update: ChatMemberUpdated) => Promise<void>;
 }): void {
   const { bot } = p;
   bot.use(idempotency(p.db, 'main'));
@@ -66,6 +70,8 @@ export function configureMainBot(p: {
   bot.on('deleted_business_messages', async (ctx) => {
     if (inWorkspace('deleted_business_messages')) await p.business.onDeleted(ctx.deletedBusinessMessages);
   });
+  const onMyChatMember = p.onMyChatMember;
+  if (onMyChatMember) bot.on('my_chat_member', (ctx) => onMyChatMember(ctx.myChatMember));
 
   if (p.admin) bot.use(p.admin);
 
@@ -79,9 +85,16 @@ export function configureMainBot(p: {
   });
 }
 
-export function configureAdminBot(bot: Bot, db: Db, admin: Composer<Context>, tenants: TenantService): void {
+export function configureAdminBot(
+  bot: Bot,
+  db: Db,
+  admin: Composer<Context>,
+  tenants: TenantService,
+  onMyChatMember?: (update: ChatMemberUpdated) => Promise<void>,
+): void {
   bot.use(idempotency(db, 'admin'));
   bot.use(tenantScope({ db, tenants }));
+  if (onMyChatMember) bot.on('my_chat_member', (ctx) => onMyChatMember(ctx.myChatMember));
   bot.use(admin);
   bot.chatType('private').command('start', async (ctx) => {
     await ctx.reply('Bu shaxsiy bot.');

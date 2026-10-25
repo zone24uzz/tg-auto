@@ -25,6 +25,8 @@ export const DIRECT_MODELS = new Set<string>([
   'OwnerAttention',
   'AuditLog',
   'AssistantTask',
+  'Channel',
+  'ChannelPost',
   'SystemEvent',
 ]);
 export const PARENT_MODELS: Readonly<Record<string, string>> = {

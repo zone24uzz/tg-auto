@@ -54,6 +54,19 @@ d('tenancy entry points without the test fallback scope (real PostgreSQL)', () =
     expect(tenant?.id).toBe(other.id);
   });
 
+  it('a channel membership update belongs to the person who added the bot', async () => {
+    const tenant = await resolveUpdateTenant(
+      { db: tdb.db, tenants },
+      { update_id: 2, my_chat_member: { chat: { id: -100, type: 'channel', title: 'c' }, from: { id: 5002, is_bot: false, first_name: 'x' }, date: 0 } } as never,
+    );
+    expect(tenant?.id).toBe(other.id);
+    const stranger = await resolveUpdateTenant(
+      { db: tdb.db, tenants },
+      { update_id: 3, my_chat_member: { chat: { id: -100, type: 'channel', title: 'c' }, from: { id: 99999, is_bot: false, first_name: 'x' }, date: 0 } } as never,
+    );
+    expect(stranger).toBeNull();
+  });
+
   it('userbot manager starts only the super-admin (other workspaces use Telegram Business)', async () => {
     const started: bigint[] = [];
     const manager = new UserbotManager({

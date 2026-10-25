@@ -14,9 +14,9 @@ export function assistantView(reply: AssistantReply): View {
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const STATUS_LABEL: Record<Lang, Record<AssistantStatus, string>> = {
-  uz: { thinking: '🤔 O‘ylayapman', searching: '🔎 Google’dan qidiryapman', database: '📇 Bazadan qidiryapman' },
-  ru: { thinking: '🤔 Думаю', searching: '🔎 Ищу в Google', database: '📇 Ищу в базе' },
-  en: { thinking: '🤔 Thinking', searching: '🔎 Searching Google', database: '📇 Looking it up' },
+  uz: { thinking: '🤔 O‘ylayapman', searching: '🔎 Google’dan qidiryapman', database: '📇 Bazadan qidiryapman', writing: '✍️ Post yozyapman' },
+  ru: { thinking: '🤔 Думаю', searching: '🔎 Ищу в Google', database: '📇 Ищу в базе', writing: '✍️ Пишу пост' },
+  en: { thinking: '🤔 Thinking', searching: '🔎 Searching Google', database: '📇 Looking it up', writing: '✍️ Writing the post' },
 };
 /** Edits per status message (Telegram allows roughly one edit per second in a chat). */
 const FRAME_MS = 1_500;

@@ -618,3 +618,51 @@ model AssistantTask {
   @@index([targetTelegramUserId])
   @@map("assistant_tasks")
 }
+
+// ───────────────────────────── channels (owner-only posting) ─────────────────────────────
+
+enum ChannelPostStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
+/// A Telegram channel where the bot is an admin, owned by the workspace of the person who added it.
+/// Tenant-scoped: other workspaces never see or post to it.
+model Channel {
+  id                    Int      @id @default(autoincrement())
+  tenantId              Int      @default(0)
+  telegramChatId        BigInt
+  title                 String
+  username              String?
+  addedByTelegramUserId BigInt
+  canPost               Boolean  @default(false)
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  posts ChannelPost[]
+
+  @@unique([tenantId, telegramChatId])
+  @@map("channels")
+}
+
+/// A post prepared by the assistant; published only after the owner presses ✅.
+model ChannelPost {
+  id                 Int               @id @default(autoincrement())
+  tenantId           Int               @default(0)
+  channelId          Int
+  /// The owner's instructions (ContentCipher ciphertext).
+  instructions       String?
+  /// The post text (ContentCipher ciphertext).
+  text               String
+  status             ChannelPostStatus @default(DRAFT)
+  publishedMessageId Int?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@map("channel_posts")
+}
