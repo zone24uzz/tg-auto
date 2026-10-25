@@ -32,6 +32,7 @@ import type {
   ToolCall,
   ToolDefinition,
   TranscribeRequest,
+  WebSource,
   TranscribeResult,
 } from '../types.js';
 import { AIProviderError } from '../types.js';
@@ -90,7 +91,11 @@ interface GeminiResponsePart {
   functionCall?: { name: string; args: Record<string, unknown> };
 }
 interface GeminiResponse {
-  candidates?: Array<{ content?: { parts?: GeminiResponsePart[] }; finishReason?: string }>;
+  candidates?: Array<{
+    content?: { parts?: GeminiResponsePart[] };
+    finishReason?: string;
+    groundingMetadata?: { groundingChunks?: Array<{ web?: { uri?: string; title?: string } }> };
+  }>;
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 }
@@ -118,6 +123,7 @@ interface RunParams {
   label: string;
   allowEmpty?: boolean;
   tools?: ToolDefinition[];
+  webSearch?: boolean;
 }
 
 interface RunResult {
@@ -125,6 +131,7 @@ interface RunResult {
   usage: TokenUsage;
   finishReason?: string;
   toolCalls?: ToolCall[];
+  sources?: WebSource[];
 }
 
 function stripModelsPrefix(model: string): string {
@@ -244,6 +251,7 @@ export class GeminiProvider implements AIProvider {
       json: req.json,
       timeoutMs: req.timeoutMs,
       tools: req.tools,
+      ...(req.webSearch ? { webSearch: true } : {}),
       label: 'generateContent',
     });
     return {
@@ -254,6 +262,7 @@ export class GeminiProvider implements AIProvider {
       finishReason: res.finishReason,
       latencyMs: Math.round(nowMs() - started),
       toolCalls: res.toolCalls,
+      ...(res.sources ? { sources: res.sources } : {}),
     };
   }
 
@@ -422,7 +431,10 @@ export class GeminiProvider implements AIProvider {
       const body: Record<string, unknown> = { contents };
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
-      if (p.tools && p.tools.length > 0) body.tools = [{ functionDeclarations: p.tools }];
+      const tools: Array<Record<string, unknown>> = [];
+      if (p.tools && p.tools.length > 0) tools.push({ functionDeclarations: p.tools });
+      if (p.webSearch) tools.push({ google_search: {} });
+      if (tools.length > 0) body.tools = tools;
 
       try {
         const res = await this.post(p.model, body, p.timeoutMs, p.label);
@@ -483,11 +495,18 @@ export class GeminiProvider implements AIProvider {
         retryable: false,
       });
     }
+    const sources: WebSource[] = [];
+    for (const chunk of candidate.groundingMetadata?.groundingChunks ?? []) {
+      const uri = chunk.web?.uri;
+      if (uri && /^https?:\/\//.test(uri) && !sources.some((s) => s.url === uri))
+        sources.push({ url: uri, ...(chunk.web?.title ? { title: chunk.web.title } : {}) });
+    }
     return {
       text: p.json ? requireJsonObject('gemini', text) : text,
       usage: usageOf(res),
       finishReason,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      ...(sources.length > 0 ? { sources } : {}),
     };
   }
 }

@@ -181,6 +181,49 @@ d('owner assistant (real PostgreSQL)', () => {
     expect((await assistant.handleText('Firdavs kirsa ayt')).text).toContain('userbot');
   });
 
+  it('plain questions get the AI’s own answer (no help text appended)', async () => {
+    say(intent({ action: 'chat', reply: 'React — UI kutubxonasi, Vue — progressiv framework.' }));
+    const reply = await assistant.handleText('React va Vue farqi nima?');
+    expect(reply.text).toBe('React — UI kutubxonasi, Vue — progressiv framework.');
+  });
+
+  it('a bare id or @username shows what the workspace knows about that contact — without an AI call', async () => {
+    await tdb.db.telegramUser.create({ data: { telegramUserId: 777001n, firstName: 'Sardor', username: 'sardor_dev', messageCount: 3 } });
+    const calls = ai.raw.classify.mock.calls.length;
+    const byId = await assistant.handleText('777001');
+    expect(byId.text).toContain('Sardor');
+    expect(byId.text).toContain('@sardor_dev');
+    expect((await assistant.handleText('@SARDOR_dev')).text).toContain('<code>777001</code>');
+    // Strangers are not looked up anywhere.
+    expect((await assistant.handleText('123456789')).text).toContain('topilmadi');
+    expect(ai.raw.classify.mock.calls.length).toBe(calls);
+  });
+
+  it('questions needing fresh facts are answered with Google Search and sources, with live statuses', async () => {
+    ai.raw.generateReply.mockResolvedValueOnce({
+      result: { text: '1 USD ≈ 12 000 so‘m.', usage: { inputTokens: 1, outputTokens: 1 }, provider: 'gemini', model: 'm', latencyMs: 1, sources: [{ url: 'https://cbu.uz/kurs', title: 'cbu.uz' }] },
+      provider: 'gemini', model: 'm', usedFallback: false, costUsd: 0,
+    } as never);
+    say(intent({ action: 'chat', reply: 'Taxminan 12 ming.', needs_search: true }));
+    const statuses: string[] = [];
+    const reply = await assistant.handleText('Bugun dollar kursi qancha?', (s) => statuses.push(s));
+    expect(statuses).toEqual(['thinking', 'searching']);
+    expect(ai.raw.generateReply).toHaveBeenCalledWith(expect.objectContaining({ webSearch: true }));
+    expect(reply.text).toContain('12 000');
+    expect(reply.text).toContain('href="https://cbu.uz/kurs"');
+  });
+
+  it('when web search is refused the direct answer is used and search is paused', async () => {
+    ai.raw.generateReply.mockRejectedValueOnce(new Error('gemini HTTP 429: RESOURCE_EXHAUSTED quota'));
+    say(intent({ action: 'chat', reply: 'Taxminan 12 ming.', needs_search: true }));
+    expect((await assistant.handleText('Bugun dollar kursi qancha?')).text).toBe('Taxminan 12 ming.');
+    say(intent({ action: 'chat', reply: 'Yana taxminan.', needs_search: true }));
+    const statuses: string[] = [];
+    expect((await assistant.handleText('Euro kursi?', (s) => statuses.push(s))).text).toBe('Yana taxminan.');
+    expect(statuses).toEqual(['thinking']);
+    expect(ai.raw.generateReply).toHaveBeenCalledTimes(1);
+  });
+
   it('unknown person and AI failure give a helpful answer', async () => {
     say(intent({ action: 'watch_message', person: 'Zarina' }));
     expect((await assistant.handleText('Zarina yozsa ayt')).text).toContain('topa olmadim');

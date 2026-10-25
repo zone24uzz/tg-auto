@@ -117,8 +117,16 @@ export class DefaultAiRouter implements AiRouter {
     const s = await this.settings.get();
     const effort = req.reasoningEffort ?? s.reasoningEffort;
     const targets = this.usable(this.replyTargets(s), hasImages(req.messages) ? 'vision' : 'text');
-    return this.run('TEXT', s, targets, ctx, countImages(req.messages), (t) =>
-      this.textCall(t, req, effort).then((r) => ({ result: r, metering: textMetering(r), effort })),
+    return this.run(
+      'TEXT',
+      s,
+      targets,
+      ctx,
+      countImages(req.messages),
+      (t) => this.textCall(t, req, effort).then((r) => ({ result: r, metering: textMetering(r), effort })),
+      // A web-search call has its own (often zero) free quota: its 429 must not cool the model down for
+      // ordinary replies.
+      { coolDown: !req.webSearch },
     );
   }
 
@@ -311,6 +319,7 @@ export class DefaultAiRouter implements AiRouter {
     ctx: AiCallContext | undefined,
     imageCount: number,
     call: (t: Target) => Promise<{ result: T; metering: Metering; effort: ReasoningEffort | undefined }>,
+    opts: { coolDown?: boolean } = {},
   ): Promise<RoutedResult<T>> {
     const attempts: Array<{ provider: ProviderId; model: string; error: string }> = [];
     const now = Date.now();
@@ -357,7 +366,7 @@ export class DefaultAiRouter implements AiRouter {
       } catch (error) {
         const message = describeError(error, 300);
         attempts.push({ provider: t.provider.id, model: t.model, error: message });
-        this.coolDown(t, error);
+        if (opts.coolDown !== false) this.coolDown(t, error);
         log.warn(
           {
             operation,

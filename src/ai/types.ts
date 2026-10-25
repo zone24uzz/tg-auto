@@ -56,6 +56,14 @@ export interface GenerateTextRequest {
   json?: JsonOutputSpec;
   timeoutMs?: number;
   tools?: ToolDefinition[];
+  /** Let the model search the web (Gemini: Google Search grounding); ignored by providers without it. */
+  webSearch?: boolean;
+}
+
+/** A web page the answer was grounded on. */
+export interface WebSource {
+  url: string;
+  title?: string;
 }
 
 export interface TokenUsage {
@@ -72,6 +80,8 @@ export interface GenerateTextResult {
   finishReason?: string;
   latencyMs: number;
   toolCalls?: ToolCall[];
+  /** Pages used when `webSearch` was on. */
+  sources?: WebSource[];
 }
 
 export interface AnalyzeImageRequest {

@@ -34,9 +34,12 @@ export interface AssistantReply {
   buttons?: AssistantButton[][];
 }
 
+/** What the assistant is doing right now (shown live in the admin chat). */
+export type AssistantStatus = 'thinking' | 'searching' | 'database';
+
 /** The admin UI depends only on this. */
 export interface AssistantPort {
-  handleText(text: string): Promise<AssistantReply>;
+  handleText(text: string, onStatus?: (status: AssistantStatus) => void): Promise<AssistantReply>;
   handleAction(args: string[]): Promise<AssistantReply>;
 }
 
@@ -97,7 +100,14 @@ export class OwnerAssistant implements AssistantPort {
 
   // ── admin chat entry points ────────────────────────────────────────────
 
-  async handleText(text: string): Promise<AssistantReply> {
+  async handleText(text: string, onStatus: (status: AssistantStatus) => void = () => undefined): Promise<AssistantReply> {
+    // A bare id / @username: show what the owner's own workspace knows about that contact (no AI call).
+    const lookup = /^\s*(@[A-Za-z][A-Za-z0-9_]{3,31}|\d{5,20})\s*$/.exec(text);
+    if (lookup) {
+      onStatus('database');
+      return this.contactCard(lookup[1]!);
+    }
+    onStatus('thinking');
     let intent: OwnerIntent;
     try {
       intent = await parseOwnerIntent(this.d.ai, text, this.now(), this.d.timezone);
@@ -115,12 +125,81 @@ export class OwnerAssistant implements AssistantPort {
       case 'watch_online':
       case 'watch_message':
       case 'send_message':
+        onStatus('database');
         return this.personTask(intent);
       case 'help':
         return { text: HELP };
       default:
-        return { text: `${intent.reply ? `${escapeHtml(intent.reply)}\n\n` : ''}${HELP}` };
+        if (intent.needsSearch && this.canSearch()) {
+          onStatus('searching');
+          const searched = await this.searchAnswer(text);
+          if (searched) return searched;
+        }
+        // chat / unknown: the AI's own answer (help only when it had nothing to say).
+        return { text: intent.reply ? escapeHtml(intent.reply) : HELP };
     }
+  }
+
+  /** Web search is skipped until then after the provider refused it (e.g. no search quota on a free key). */
+  private searchBlockedUntil = 0;
+
+  /** Answers with Google Search grounding (Gemini) and lists the sources; null when it fails. */
+  private async searchAnswer(question: string): Promise<AssistantReply | null> {
+    if (Date.now() < this.searchBlockedUntil) return null;
+    try {
+      const routed = await this.d.ai.generateReply({
+        system: [
+          "You are the owner's personal assistant. Answer the question using Google Search for current facts.",
+          'Be accurate and concise (1–6 sentences unless more is asked), in the language of the question, plain text without markdown.',
+          `Current time: ${formatDateTime(this.now(), this.d.timezone)} (${this.d.timezone}).`,
+        ].join('\n'),
+        messages: [{ role: 'user', parts: [{ type: 'text', text: question.slice(0, 2000) }] }],
+        maxOutputTokens: 1200,
+        temperature: 0.3,
+        webSearch: true,
+      });
+      const answer = routed.result.text.trim();
+      if (!answer) return null;
+      const sources = (routed.result.sources ?? []).slice(0, 3);
+      const list = sources.map((s, i) => `${i + 1}. <a href="${escapeHtml(s.url)}">${escapeHtml((s.title ?? s.url).slice(0, 60))}</a>`);
+      return { text: escapeHtml(answer) + (list.length ? `\n\n🔗 Manbalar:\n${list.join('\n')}` : '') };
+    } catch (error) {
+      const message = describeError(error);
+      // Quota / not allowed: don't keep paying the extra round trip on every question.
+      if (/429|quota|RESOURCE_EXHAUSTED|PERMISSION_DENIED|not supported/i.test(message)) this.searchBlockedUntil = Date.now() + 6 * 3_600_000;
+      log.warn({ error: message }, 'web search answer failed; using the direct answer');
+      return null;
+    }
+  }
+
+  /** True while web search is available (the live status only shows "searching" then). */
+  canSearch(): boolean {
+    return Date.now() >= this.searchBlockedUntil;
+  }
+
+  /**
+   * What this workspace already knows about a contact who wrote to the owner (by id or @username).
+   * Only stored data of the owner's own conversations is shown: no lookup of strangers on Telegram.
+   */
+  private async contactCard(query: string): Promise<AssistantReply> {
+    const user = query.startsWith('@')
+      ? await this.d.db.telegramUser.findFirst({ where: { username: { equals: query.slice(1), mode: 'insensitive' } } })
+      : await this.d.db.telegramUser.findFirst({ where: { telegramUserId: BigInt(query) } });
+    if (!user)
+      return { text: `🔎 <code>${escapeHtml(query)}</code> sizga yozganlar orasida topilmadi. Men faqat siz bilan yozishgan odamlar haqidagi ma’lumotni ko‘rsataman.` };
+    const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '—';
+    const rule = await this.d.db.userRule.findFirst({ where: { matchType: 'USER_ID', matchValue: user.telegramUserId.toString() } });
+    const tz = this.d.timezone;
+    const lines = [
+      `👤 <b>${escapeHtml(name)}</b>`,
+      `Username: ${user.username ? `@${escapeHtml(user.username)}` : '—'}`,
+      `ID: <code>${user.telegramUserId}</code>`,
+      `Kontaktlaringizda: ${user.isContact ? 'ha' : 'yo‘q'}${user.isBot ? ' · 🤖 bot' : ''}`,
+      `Xabarlar: ${user.messageCount} · birinchi: ${formatDateTime(user.firstSeenAt, tz)}${user.lastMessageAt ? ` · oxirgi: ${formatDateTime(user.lastMessageAt, tz)}` : ''}`,
+      `Javob rejimi: ${rule?.mode ?? 'umumiy qoida'}${user.tags.length ? ` · teglar: ${user.tags.map((t) => escapeHtml(t)).join(', ')}` : ''}`,
+    ];
+    if (user.notes) lines.push(`Izoh: ${escapeHtml(user.notes)}`);
+    return { text: lines.join('\n') };
   }
 
   async handleAction(args: string[]): Promise<AssistantReply> {

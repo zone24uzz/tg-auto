@@ -11,6 +11,7 @@ export const ASSISTANT_ACTIONS = [
   'list_tasks',
   'cancel_task',
   'help',
+  'chat',
   'unknown',
 ] as const;
 export type AssistantAction = (typeof ASSISTANT_ACTIONS)[number];
@@ -24,7 +25,9 @@ export interface OwnerIntent {
   /** Reminder text or the message to send on the owner's behalf. */
   text?: string;
   taskId?: number;
-  /** Short Uzbek reply for help/unknown or a clarification. */
+  /** chat only: the answer needs current information from the internet. */
+  needsSearch: boolean;
+  /** The answer for `chat` (the owner's question/conversation), or a short clarification otherwise. */
   reply: string;
 }
 
@@ -37,9 +40,13 @@ const INTENT_SCHEMA = {
     remind_at: { type: 'string', description: 'absolute ISO 8601 date-time with offset for reminders; empty otherwise' },
     text: { type: 'string', description: 'reminder text or the exact message to send; empty otherwise' },
     task_id: { type: 'integer', description: 'task number for cancel_task; 0 if none' },
-    reply: { type: 'string', description: 'short Uzbek reply, no markdown' },
+    reply: { type: 'string', description: 'for chat: the full helpful answer; otherwise one short sentence. Plain text, no markdown' },
+    needs_search: {
+      type: 'boolean',
+      description: 'chat only: true when a correct answer needs current information from the internet (news, prices, exchange rates, weather, sports, recent events, “today/latest”)',
+    },
   },
-  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply'],
+  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search'],
 } as const;
 
 const rawSchema = z.object({
@@ -49,7 +56,8 @@ const rawSchema = z.object({
   remind_at: z.string().max(60).optional().default(''),
   text: z.string().max(2000).optional().default(''),
   task_id: z.number().int().min(0).optional().default(0),
-  reply: z.string().max(500).optional().default(''),
+  reply: z.string().max(3000).optional().default(''),
+  needs_search: z.boolean().optional().default(false),
 });
 
 function systemPrompt(now: Date, timezone: string): string {
@@ -66,9 +74,10 @@ function systemPrompt(now: Date, timezone: string): string {
     '- send_message: send a message to a person on the owner\'s behalf ("X ga yoz: ...", "X ga ayt ..."). text = the message exactly as it should be sent, in the language the owner used, without quotes.',
     '- list_tasks: show the active tasks ("vazifalar", "kuzatuvlar", "nima kuzatyapsan").',
     '- cancel_task: stop a task ("X kuzatuvini o\'chir" → person; "3-vazifani o\'chir" → task_id).',
-    '- help: what can you do. unknown: anything else.',
+    '- help: the owner asks what you can do.',
+    '- chat: anything else — a question, a request for advice, text to write/translate/fix, small talk. Answer it yourself in `reply`: helpful, accurate, concise (usually 1–6 sentences, longer only if asked), in the language the owner wrote in, plain text without markdown. Do not invent facts about the owner’s contacts.',
     'person = the name, @username or numeric id exactly as written, without Uzbek case suffixes (Firdavsga → Firdavs, Alini → Ali). repeat = true only for "har safar / doim / always / har gal", otherwise false.',
-    'Never invent people, times or texts. reply = one short friendly Uzbek sentence (no markdown) confirming what you understood or asking for what is missing.',
+    'Never invent people, times or texts. For actions other than chat, reply = one short friendly sentence in the owner’s language confirming what you understood or asking for what is missing.',
     'Return only the JSON object.',
   ].join('\n');
 }
@@ -79,7 +88,7 @@ export async function parseOwnerIntent(ai: AiRouter, text: string, now: Date, ti
     system: systemPrompt(now, timezone),
     messages: [{ role: 'user', parts: [{ type: 'text', text: text.slice(0, 2000) }] }],
     json: { schema: INTENT_SCHEMA as unknown as Record<string, unknown>, name: 'owner_command' },
-    maxOutputTokens: 500,
+    maxOutputTokens: 1200,
     temperature: 0,
   });
   const raw = rawSchema.parse(JSON.parse(extractJson(routed.result.text)));
@@ -105,5 +114,6 @@ export function normalizeIntent(raw: z.input<typeof rawSchema>, now: Date): Owne
     ...(r.text.trim() ? { text: r.text.trim() } : {}),
     ...(r.task_id > 0 ? { taskId: r.task_id } : {}),
     reply: r.reply.trim(),
+    needsSearch: r.action === 'chat' && r.needs_search,
   };
 }
