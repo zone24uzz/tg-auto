@@ -1,6 +1,7 @@
 import type { PresenceState, UserbotAssistantApi } from '../app/userbot-contract.js';
 import type { AiRouter } from '../ai/router/types.js';
 import type { ChannelService } from '../channels/channel.service.js';
+import type { CalendarService, NewEvent } from '../google/calendar.service.js';
 import type { Db } from '../database/client.js';
 import type { AssistantTask, AssistantTaskKind } from '../generated/prisma/client.js';
 import type { EventLog } from '../logging/events.js';
@@ -10,7 +11,7 @@ import type { PgQueue } from '../queues/pg-queue.js';
 import type { ContentCipher } from '../security/crypto.js';
 import { cb } from '../telegram/admin/callback-data.js';
 import { escapeHtml } from '../telegram/common/html.js';
-import { formatDateTime } from '../utils/time.js';
+import { formatDateTime, startOfDayInTz } from '../utils/time.js';
 import { currentTenantOrNull } from '../tenancy/context.js';
 import { T } from '../onboarding/texts.js';
 import { parseOwnerIntent, type OwnerIntent } from './intent.js';
@@ -38,7 +39,7 @@ export interface AssistantReply {
 }
 
 /** What the assistant is doing right now (shown live in the admin chat). */
-export type AssistantStatus = 'thinking' | 'searching' | 'database' | 'writing';
+export type AssistantStatus = 'thinking' | 'searching' | 'database' | 'writing' | 'calendar';
 
 /** The admin UI depends only on this. */
 export interface AssistantPort {
@@ -57,6 +58,8 @@ export interface AssistantDeps {
   timezone: string;
   /** Channel posts (optional: absent → the assistant says channels are unavailable). */
   channels?: ChannelService;
+  /** Google Calendar (super-admin only for now). */
+  calendar?: CalendarService;
   events?: Pick<EventLog, 'info' | 'warn'>;
   now?: () => Date;
 }
@@ -76,6 +79,7 @@ const HELP = [
   '• <i>Firdavsga yoz: ertaga 10 da uchrashamiz</i> (yuborishdan oldin tasdiqlaysiz)',
   '• <i>Vazifalarim</i> yoki /tasks · <i>Firdavs kuzatuvini o‘chir</i>',
   '• <i>Kanalga post yoz: yangi xizmatimiz haqida</i> (joylashdan oldin tasdiqlaysiz) · <i>Kanallarim</i>',
+  '• <i>Bugun nima rejalarim bor?</i> · <i>Ertaga 15:00 ga Ali bilan uchrashuv qo‘sh</i> (Google Calendar)',
 ].join('\n');
 
 /**
@@ -87,6 +91,7 @@ export class OwnerAssistant implements AssistantPort {
   /** Per workspace: a draft waiting for the owner's change request (after ✏️), or a post waiting for a channel choice. */
   private readonly pendingRevision = new Map<number, { postId: number; at: number }>();
   private readonly pendingChannel = new Map<number, { instructions: string; exact: boolean; at: number }>();
+  private readonly pendingEvent = new Map<number, { event: NewEvent; at: number }>();
 
   /** Resolves the userbot of the workspace being served (one MTProto account per workspace). */
   private userbotOf: () => UserbotAssistantApi | null = () => null;
@@ -148,7 +153,12 @@ export class OwnerAssistant implements AssistantPort {
       case 'list_channels':
         return this.d.channels ? this.d.channels.listReply() : { text: '📢 Kanallar bu yerda yoqilmagan.' };
       case 'channel_post':
-        return this.channelPost(intent.text ?? text, intent.exact, intent.channel, onStatus);
+        return this.channelPost(intent.text ?? text, intent.exact, intent.channel, onStatus, intent.needsSearch);
+      case 'calendar_connect':
+      case 'calendar_disconnect':
+      case 'calendar_list':
+      case 'calendar_add':
+        return this.calendarCommand(intent, onStatus);
       case 'help':
         return { text: HELP };
       default:
@@ -167,9 +177,15 @@ export class OwnerAssistant implements AssistantPort {
     exact: boolean,
     channelQuery: string | undefined,
     onStatus: (status: AssistantStatus) => void,
+    needsSearch = false,
   ): Promise<AssistantReply> {
     const channels = this.d.channels;
     if (!channels) return { text: '📢 Kanallar bu yerda yoqilmagan.' };
+    // A post about news needs real, current facts: never let the model invent them.
+    if (needsSearch && !exact && !this.canSearch())
+      return {
+        text: '📰 Haqiqiy yangiliklarni topish uchun Google qidiruvi kerak, u esa hozir ishlamayapti (Gemini kalitida billing yoqilmagan). Yangilik to‘qib chiqarmayman.\n\nBuning o‘rniga: mavzu yoki yangilik matnini o‘zingiz bering (<i>kanalga post yoz: … haqida, mana ma’lumot: …</i>) yoki <i>kanalga joyla: …</i> deb tayyor matn yuboring.',
+      };
     const { channel, choices } = await channels.resolve(channelQuery);
     if (!channel) {
       if (choices.length === 0) return { text: channels.howToConnect() };
@@ -179,8 +195,62 @@ export class OwnerAssistant implements AssistantPort {
         buttons: [...choices.map((c) => [{ label: c.title.slice(0, 40), data: cb(ASSISTANT_ROUTE, 'cp', 'pick', c.id) }]), [{ label: '❌ Bekor', data: cb(ASSISTANT_ROUTE, 'cp', 'drop', 0) }]],
       };
     }
-    if (!exact) onStatus('writing');
-    return channels.draft(channel, instructions, exact);
+    if (!exact) onStatus(needsSearch ? 'searching' : 'writing');
+    try {
+      return await channels.draft(channel, instructions, exact, { webSearch: needsSearch && !exact });
+    } catch (error) {
+      if (needsSearch) this.searchBlockedUntil = Date.now() + 6 * 3_600_000;
+      log.warn({ error: describeError(error) }, 'channel draft failed');
+      return { text: '❌ AI hozir javob bermadi (Google tomonida sekinlik). Birozdan keyin qaytadan yozing.' };
+    }
+  }
+
+  private async calendarCommand(intent: OwnerIntent, onStatus: (status: AssistantStatus) => void): Promise<AssistantReply> {
+    const calendar = this.d.calendar;
+    if (!calendar || !calendar.allowed()) return { text: '📅 Google Calendar hozircha faqat administrator uchun.' };
+    if (!calendar.configured())
+      return { text: '📅 Google Calendar sozlanmagan: Render’da <code>GOOGLE_CLIENT_ID</code> va <code>GOOGLE_CLIENT_SECRET</code> qo‘shilishi kerak.' };
+    if (intent.action === 'calendar_connect')
+      return { text: `📅 Google Calendar’ni ulash uchun bosing: <a href="${escapeHtml(calendar.connectUrl())}">🔗 Google bilan ulash</a>\n\n<i>Havola 15 daqiqa amal qiladi. Google «tasdiqlanmagan ilova» desa: Advanced → Go to …</i>` };
+    if (intent.action === 'calendar_disconnect') return { text: (await calendar.disconnect()) ? '📅 Google Calendar uzildi.' : '📅 Kalendar ulanmagan edi.' };
+    if (!(await calendar.account())) return { text: '📅 Kalendar hali ulanmagan. <i>Kalendarni ula</i> deb yozing.' };
+    const tz = this.d.timezone;
+    try {
+      if (intent.action === 'calendar_list') {
+        onStatus('calendar');
+        const from = intent.startAt ?? startOfDayInTz(this.now(), tz);
+        const to = intent.endAt && intent.endAt > from ? intent.endAt : new Date(from.getTime() + 24 * 3_600_000 - 1);
+        const events = await calendar.listEvents(from, to);
+        return { text: calendar.formatEvents(events, `Rejalar: ${formatDateTime(from, tz)} — ${formatDateTime(to, tz)}`) };
+      }
+      if (!intent.startAt) return { text: '📅 Qachonga qo‘shay? Masalan: <i>ertaga 15:00 ga Ali bilan uchrashuv qo‘sh</i>.' };
+      const start = intent.startAt;
+      const end = intent.endAt && intent.endAt > start ? intent.endAt : new Date(start.getTime() + 3_600_000);
+      const event: NewEvent = { summary: (intent.text ?? 'Uchrashuv').slice(0, 200), start, end };
+      this.pendingEvent.set(currentTenantOrNull()?.tenantId ?? 0, { event, at: Date.now() });
+      return {
+        text: `📅 Kalendarga qo‘shaymi?\n\n<b>${escapeHtml(event.summary)}</b>\n${formatDateTime(start, tz)} — ${formatDateTime(end, tz)}`,
+        buttons: [[{ label: '✅ Qo‘shish', data: cb(ASSISTANT_ROUTE, 'cal', 'ok', 0) }, { label: '❌ Bekor', data: cb(ASSISTANT_ROUTE, 'cal', 'no', 0) }]],
+      };
+    } catch (error) {
+      log.warn({ error: describeError(error) }, 'calendar command failed');
+      return { text: '❌ Google Calendar bilan bog‘lanib bo‘lmadi. Kalendarni qayta ulab ko‘ring (<i>kalendarni ula</i>).' };
+    }
+  }
+
+  private async calendarAction(verb: string | undefined): Promise<AssistantReply> {
+    const key = currentTenantOrNull()?.tenantId ?? 0;
+    const pending = this.pendingEvent.get(key);
+    this.pendingEvent.delete(key);
+    if (verb !== 'ok') return { text: '❌ Bekor qilindi.' };
+    if (!pending || Date.now() - pending.at > PENDING_TTL_MS || !this.d.calendar?.allowed()) return { text: 'ℹ️ Bu so‘rov eskirgan. Qaytadan yozing.' };
+    try {
+      const created = await this.d.calendar.createEvent(pending.event);
+      return { text: `✅ Kalendarga qo‘shildi: <b>${escapeHtml(created.summary)}</b>\n${formatDateTime(created.start, this.d.timezone)}` };
+    } catch (error) {
+      log.warn({ error: describeError(error) }, 'calendar event creation failed');
+      return { text: '❌ Tadbirni qo‘shib bo‘lmadi. Qaytadan urinib ko‘ring.' };
+    }
   }
 
   private async channelAction(verb: string | undefined, id: number): Promise<AssistantReply> {
@@ -231,6 +301,7 @@ export class OwnerAssistant implements AssistantPort {
         maxOutputTokens: 1200,
         temperature: 0.3,
         webSearch: true,
+        timeoutMs: 45_000,
       });
       const answer = routed.result.text.trim();
       if (!answer) return null;
@@ -279,6 +350,7 @@ export class OwnerAssistant implements AssistantPort {
   async handleAction(args: string[]): Promise<AssistantReply> {
     const [verb, a, b] = args;
     if (verb === 'cp') return this.channelAction(a, Number(b));
+    if (verb === 'cal') return this.calendarAction(a);
     const id = Number(a);
     switch (verb) {
       case 'list':

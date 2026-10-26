@@ -2,28 +2,45 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AssistantStatus } from '../../src/assistant/assistant.service.js';
 import { ADMIN_ID, baseDeps, callsOf, createTestBot, messageUpdate } from './helpers.js';
 
-describe('assistant live status in the admin chat', () => {
-  it('shows what the assistant is doing, then turns that message into the answer', async () => {
-    const { deps } = baseDeps();
-    const assistant = {
-      handleText: vi.fn(async (_text: string, onStatus?: (s: AssistantStatus) => void) => {
-        onStatus?.('thinking');
-        onStatus?.('searching');
-        return { text: 'Javob tayyor ✅' };
-      }),
-      handleAction: vi.fn(),
-    };
-    Object.assign(deps, { assistant });
-    const { bot, calls } = createTestBot(deps);
-    await bot.handleUpdate(messageUpdate(ADMIN_ID, 'Bugun dollar kursi qancha?'));
+function setup() {
+  const { deps } = baseDeps();
+  const assistant = {
+    handleText: vi.fn(async (_text: string, onStatus?: (s: AssistantStatus) => void) => {
+      onStatus?.('thinking');
+      onStatus?.('searching');
+      return { text: 'Javob tayyor ✅' };
+    }),
+    handleAction: vi.fn(),
+  };
+  Object.assign(deps, { assistant });
+  return createTestBot(deps);
+}
 
-    const sent = callsOf(calls, 'sendMessage');
-    expect(sent).toHaveLength(1);
-    expect(String(sent[0]!.payload.text)).toContain('O‘ylayapman');
-    const edits = callsOf(calls, 'editMessageText');
-    expect(edits.some((e) => String(e.payload.text).includes('Google’dan qidiryapman'))).toBe(true);
-    const last = edits.at(-1)!;
+describe('assistant live status in the admin chat', () => {
+  it('streams the status as a message draft (smooth native animation), then sends the answer', async () => {
+    const { bot, calls } = setup();
+    await bot.handleUpdate(messageUpdate(ADMIN_ID, 'Bugun dollar kursi qancha?'));
+    await vi.waitFor(() => expect(callsOf(calls, 'sendMessage').some((c) => c.payload.text === 'Javob tayyor ✅')).toBe(true));
+
+    const drafts = callsOf(calls, 'sendMessageDraft');
+    expect(String(drafts[0]!.payload.text)).toContain('O‘ylayapman');
+    expect(drafts.some((d) => String(d.payload.text).includes('Google’dan qidiryapman'))).toBe(true);
+    expect(new Set(drafts.map((d) => d.payload.draft_id)).size).toBe(1); // one draft, animated in place
+    expect(callsOf(calls, 'sendChatAction').length).toBeGreaterThan(0); // native "typing…"
+    expect(callsOf(calls, 'editMessageText')).toHaveLength(0);
+  });
+
+  it('falls back to editing one message when drafts are unavailable', async () => {
+    const { bot, calls } = setup();
+    bot.api.config.use(async (prev, method, payload, signal) => {
+      if (method === 'sendMessageDraft') throw new Error('Bad Request: method is unavailable');
+      return prev(method, payload, signal);
+    });
+    await bot.handleUpdate(messageUpdate(ADMIN_ID, 'Bugun dollar kursi qancha?'));
+    await vi.waitFor(() => expect(callsOf(calls, 'editMessageText').some((e) => e.payload.text === 'Javob tayyor ✅')).toBe(true));
+    const status = callsOf(calls, 'sendMessage');
+    expect(String(status[0]!.payload.text)).toContain('O‘ylayapman');
+    const last = callsOf(calls, 'editMessageText').at(-1)!;
     expect(last.payload.text).toBe('Javob tayyor ✅');
-    expect(last.payload.message_id).toBe(edits[0]!.payload.message_id);
   });
 });

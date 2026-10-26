@@ -44,6 +44,25 @@ describe('Gemini Google Search grounding', () => {
     expect(r.sources).toEqual([{ url: 'https://cbu.uz/kurs', title: 'cbu.uz' }]);
   });
 
+  it('a model that timed out is skipped for a while (the fallback answers at once)', async () => {
+    const gemini = new FakeProvider('gemini');
+    gemini.generateText.mockImplementation(async (req) => {
+      if (req.model === 'gemini-3.8-flash') throw new AIProviderError('gemini: request timed out after 30000ms', 'gemini', 'TIMEOUT');
+      return { text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, provider: 'gemini', model: req.model, latencyMs: 1 };
+    });
+    const settings = baseSettings({ fallbackModel: 'gemini-3.5-flash' });
+    const router = new DefaultAiRouter({
+      registry: new ProviderRegistry([gemini]),
+      settings: { get: async () => settings },
+      usage: { record: vi.fn(async () => undefined) },
+      timeoutMs: 1000,
+      pricing: new PricingTable(),
+    });
+    await expect(router.generateReply({ messages: msg })).resolves.toMatchObject({ model: 'gemini-3.5-flash' });
+    await expect(router.generateReply({ messages: msg })).resolves.toMatchObject({ model: 'gemini-3.5-flash' });
+    expect(gemini.generateText.mock.calls.filter(([req]) => req.model === 'gemini-3.8-flash')).toHaveLength(1);
+  });
+
   it('a refused web-search call does not cool the model down for ordinary replies', async () => {
     const gemini = new FakeProvider('gemini');
     gemini.generateText.mockImplementation(async (req) => {

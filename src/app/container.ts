@@ -1,9 +1,11 @@
 import type { Bot } from 'grammy';
+import { randomBytes } from 'node:crypto';
 import { DefaultAiRouter } from '../ai/router/ai-router.js';
 import { TenantLimiter } from '../ai/router/global-limiter.js';
 import { ProviderRegistry } from '../ai/registry.js';
 import { ASSISTANT_ROUTE, OwnerAssistant } from '../assistant/assistant.service.js';
 import { ChannelService } from '../channels/channel.service.js';
+import { CalendarService } from '../google/calendar.service.js';
 import { cb } from '../telegram/admin/callback-data.js';
 import { AuditService } from '../audit/audit.service.js';
 import { MessageClassifier } from '../classifiers/classifier.js';
@@ -149,6 +151,18 @@ export function buildContainer(env: Env) {
     notifier,
     button: (verb, id) => cb(ASSISTANT_ROUTE, 'cp', verb, id),
   });
+  const calendar = new CalendarService({
+    db,
+    cipher,
+    tenants,
+    notifier,
+    ...(env.GOOGLE_CLIENT_ID ? { clientId: env.GOOGLE_CLIENT_ID } : {}),
+    ...(env.GOOGLE_CLIENT_SECRET ? { clientSecret: env.GOOGLE_CLIENT_SECRET } : {}),
+    ...(env.TELEGRAM_WEBHOOK_URL ? { publicUrl: env.TELEGRAM_WEBHOOK_URL } : {}),
+    stateSecret: env.TELEGRAM_WEBHOOK_SECRET ?? env.DATA_ENCRYPTION_KEY ?? randomBytes(32).toString('hex'),
+    superAdminId: env.ADMIN_TELEGRAM_USER_ID,
+    timezone: env.TIMEZONE,
+  });
   const assistant = new OwnerAssistant({
     db,
     ai,
@@ -158,6 +172,7 @@ export function buildContainer(env: Env) {
     sendAsOwner: (chatId, text) => sender.sendAsOwner(chatId, text),
     timezone: env.TIMEZONE,
     channels,
+    calendar,
     events,
   });
   const business = new BusinessHandlers({
@@ -211,6 +226,7 @@ export function buildContainer(env: Env) {
     assistant,
     tenants,
     channels,
+    calendar,
   };
 }
 

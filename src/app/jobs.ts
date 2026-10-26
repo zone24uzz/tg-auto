@@ -202,6 +202,8 @@ async function tenantTick(c: Container): Promise<void> {
   }
   // Owner's assistant: presence polling for "tell me when X is online" + stale draft cleanup.
   await c.assistant.tick().catch((error: unknown) => log.warn({ err: error }, 'assistant tick failed'));
+  // Google Calendar: reminders 30 minutes before events (super-admin only, when connected).
+  await c.calendar.remindUpcoming().catch((error: unknown) => log.warn({ err: error }, 'calendar reminders failed'));
   const last = settings.lastCleanupAt ? new Date(settings.lastCleanupAt).getTime() : 0;
   if (Date.now() - last > 24 * 3_600_000) {
     const day = new Date().toISOString().slice(0, 10);

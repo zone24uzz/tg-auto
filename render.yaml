@@ -61,5 +61,10 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      # Google Calendar for the super-admin (optional; OAuth web client, redirect /oauth/google/callback)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
       - key: DATA_ENCRYPTION_KEY
         sync: false

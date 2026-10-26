@@ -48,6 +48,9 @@ export const envSchema = z
     TELEGRAM_BOT_TOKEN: telegramToken,
     TELEGRAM_UPDATE_MODE: z.enum(['polling', 'webhook']).default('polling'),
     TELEGRAM_WEBHOOK_URL: optionalString,
+    /** Google OAuth client (Calendar for the super-admin); optional. */
+    GOOGLE_CLIENT_ID: optionalString,
+    GOOGLE_CLIENT_SECRET: optionalString,
     TELEGRAM_WEBHOOK_SECRET: optionalString.pipe(
       z
         .string()

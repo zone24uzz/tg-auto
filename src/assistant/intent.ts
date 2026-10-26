@@ -12,6 +12,10 @@ export const ASSISTANT_ACTIONS = [
   'cancel_task',
   'channel_post',
   'list_channels',
+  'calendar_list',
+  'calendar_add',
+  'calendar_connect',
+  'calendar_disconnect',
   'help',
   'chat',
   'unknown',
@@ -33,6 +37,9 @@ export interface OwnerIntent {
   channel?: string;
   /** channel_post: `text` is the exact post to publish as-is (not instructions to write one). */
   exact: boolean;
+  /** calendar_*: range start / event start, and range end / event end. */
+  startAt?: Date;
+  endAt?: Date;
   /** The answer for `chat` (the owner's question/conversation), or a short clarification otherwise. */
   reply: string;
 }
@@ -49,12 +56,14 @@ const INTENT_SCHEMA = {
     reply: { type: 'string', description: 'for chat: the full helpful answer; otherwise one short sentence. Plain text, no markdown' },
     channel: { type: 'string', description: 'channel_post: channel title or @username if the owner named one; empty otherwise' },
     exact: { type: 'boolean', description: 'channel_post: true only when the owner gave the exact post text to publish as-is' },
+    start_at: { type: 'string', description: 'calendar_list: range start; calendar_add: event start. Absolute ISO 8601 with offset; empty if not given' },
+    end_at: { type: 'string', description: 'calendar_list: range end; calendar_add: event end (empty = 1 hour). Absolute ISO 8601 with offset' },
     needs_search: {
       type: 'boolean',
-      description: 'chat only: true when a correct answer needs current information from the internet (news, prices, exchange rates, weather, sports, recent events, “today/latest”)',
+      description: 'chat / channel_post: true when the answer or post needs current information from the internet (news, “latest”, prices, exchange rates, weather, sports, recent events)',
     },
   },
-  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search', 'channel', 'exact'],
+  required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search', 'channel', 'exact', 'start_at', 'end_at'],
 } as const;
 
 const rawSchema = z.object({
@@ -68,6 +77,8 @@ const rawSchema = z.object({
   needs_search: z.boolean().optional().default(false),
   channel: z.string().max(100).optional().default(''),
   exact: z.boolean().optional().default(false),
+  start_at: z.string().max(60).optional().default(''),
+  end_at: z.string().max(60).optional().default(''),
 });
 
 function systemPrompt(now: Date, timezone: string): string {
@@ -86,6 +97,9 @@ function systemPrompt(now: Date, timezone: string): string {
     '- cancel_task: stop a task ("X kuzatuvini o\'chir" → person; "3-vazifani o\'chir" → task_id).',
     '- channel_post: write/publish a post in the owner’s Telegram channel ("kanalga post yoz: …", "kanalga joyla: …", "написать пост в канал"). text = the topic/instructions, or the exact text when the owner gave it (then exact=true); channel = the channel name if given.',
     '- list_channels: show the connected channels ("kanallarim", "qaysi kanallar ulangan").',
+    '- calendar_list: the owner asks about their schedule ("bugun nima rejalarim bor", "ertaga bandmanmi", "shu hafta"). start_at/end_at = the asked period (default: today 00:00–23:59).',
+    '- calendar_add: add an event to the owner’s Google Calendar ("ertaga 15:00 ga Ali bilan uchrashuv qo‘sh"). text = event title; start_at = start; end_at = end if given.',
+    '- calendar_connect / calendar_disconnect: connect or disconnect Google Calendar ("kalendarni ula", "kalendarni uz").',
     '- help: the owner asks what you can do.',
     '- chat: anything else — a question, a request for advice, text to write/translate/fix, small talk. Answer it yourself in `reply`: helpful, accurate, concise (usually 1–6 sentences, longer only if asked), in the language the owner wrote in, plain text without markdown. Do not invent facts about the owner’s contacts.',
     'person = the name, @username or numeric id exactly as written, without Uzbek case suffixes (Firdavsga → Firdavs, Alini → Ali). repeat = true only for "har safar / doim / always / har gal", otherwise false.',
@@ -102,6 +116,8 @@ export async function parseOwnerIntent(ai: AiRouter, text: string, now: Date, ti
     json: { schema: INTENT_SCHEMA as unknown as Record<string, unknown>, name: 'owner_command' },
     maxOutputTokens: 1200,
     temperature: 0,
+    // Interactive: a hanging model must fail fast so the fallback model answers.
+    timeoutMs: 30_000,
   });
   const raw = rawSchema.parse(JSON.parse(extractJson(routed.result.text)));
   return normalizeIntent(raw, now);
@@ -126,8 +142,17 @@ export function normalizeIntent(raw: z.input<typeof rawSchema>, now: Date): Owne
     ...(r.text.trim() ? { text: r.text.trim() } : {}),
     ...(r.task_id > 0 ? { taskId: r.task_id } : {}),
     reply: r.reply.trim(),
-    needsSearch: r.action === 'chat' && r.needs_search,
+    needsSearch: (r.action === 'chat' || r.action === 'channel_post') && r.needs_search,
     ...(r.channel.trim() ? { channel: r.channel.trim() } : {}),
     exact: r.action === 'channel_post' && r.exact,
+    ...(isoDate(r.start_at) ? { startAt: isoDate(r.start_at)! } : {}),
+    ...(isoDate(r.end_at) ? { endAt: isoDate(r.end_at)! } : {}),
   };
+}
+
+/** A valid absolute date from model output, or undefined. */
+function isoDate(value: string): Date | undefined {
+  if (!value.trim()) return undefined;
+  const d = new Date(value.trim());
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }

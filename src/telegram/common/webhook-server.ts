@@ -46,6 +46,8 @@ export interface HttpServerOptions {
   mainBot?: Bot;
   adminBot?: Bot;
   readiness: () => Promise<boolean>;
+  /** Extra GET pages (e.g. the Google OAuth callback); they answer with HTML. */
+  pages?: Record<string, (url: URL) => Promise<{ status: number; html: string }>>;
 }
 
 export const WEBHOOK_PATHS = { main: '/telegram/main', admin: '/telegram/admin' } as const;
@@ -88,6 +90,13 @@ export function startHttpServer(opts: HttpServerOptions): Server {
     try {
       if (req.method === 'GET' && url === '/healthz') return send(res, 200, 'ok');
       if (req.method === 'GET' && url === '/readyz') return send(res, (await readiness()) ? 200 : 503, '');
+      const page = req.method === 'GET' && url ? opts.pages?.[url] : undefined;
+      if (page) {
+        const result = await page(new URL(req.url ?? '/', 'http://localhost'));
+        res.writeHead(result.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+        res.end(result.html);
+        return;
+      }
 
       const bot = url === WEBHOOK_PATHS.main ? opts.mainBot : url === WEBHOOK_PATHS.admin ? opts.adminBot : undefined;
       if (req.method === 'POST' && bot) {

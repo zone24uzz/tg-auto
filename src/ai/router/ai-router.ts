@@ -35,6 +35,8 @@ import type { AiCallContext, AiRouter, RoutedResult } from './types.js';
 const log = childLogger('ai-router');
 /** Longest time a rate-limited model is skipped (daily quotas reset within a day). */
 const MAX_COOLDOWN_MS = 12 * 3_600_000;
+/** How long a model that timed out is skipped. */
+const TIMEOUT_COOLDOWN_MS = 5 * 60_000;
 
 export interface AiRouterDeps {
   registry: Pick<ProviderRegistry, 'get' | 'configured' | 'defaultTranscriptionModel' | 'defaultTtsModel'>;
@@ -304,8 +306,12 @@ export class DefaultAiRouter implements AiRouter {
   }
 
   private coolDown(t: Target, error: unknown): void {
-    if (!(error instanceof AIProviderError) || error.code !== 'RATE_LIMIT') return;
-    const ms = Math.min(error.options.cooldownMs ?? (error.options.quotaExhausted ? 15 * 60_000 : 60_000), MAX_COOLDOWN_MS);
+    if (!(error instanceof AIProviderError) || (error.code !== 'RATE_LIMIT' && error.code !== 'TIMEOUT')) return;
+    // A hanging model (timeout) is skipped briefly so the next calls go straight to the fallback.
+    const ms =
+      error.code === 'TIMEOUT'
+        ? TIMEOUT_COOLDOWN_MS
+        : Math.min(error.options.cooldownMs ?? (error.options.quotaExhausted ? 15 * 60_000 : 60_000), MAX_COOLDOWN_MS);
     let byModel = this.cooling.get(t.provider);
     if (!byModel) this.cooling.set(t.provider, (byModel = new Map()));
     byModel.set(t.model, Date.now() + ms);

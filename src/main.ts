@@ -5,6 +5,7 @@ import { buildContainer } from './app/container.js';
 import { buildWorker, startScheduler } from './app/jobs.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { pingDb, waitForDb } from './database/client.js';
+import { GOOGLE_CALLBACK_PATH } from './google/calendar.service.js';
 import { logger } from './logging/logger.js';
 import { Onboarding } from './onboarding/onboarding.js';
 import { AccessService } from './tenancy/access.service.js';
@@ -150,6 +151,7 @@ async function main(): Promise<void> {
   let server: Server | undefined;
   if (env.TELEGRAM_UPDATE_MODE === 'webhook') {
     server = startHttpServer({
+      pages: { [GOOGLE_CALLBACK_PATH]: (url) => c.calendar.handleCallback(url) },
       port: env.PORT,
       webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
       mainBot: c.mainBot,
@@ -169,7 +171,7 @@ async function main(): Promise<void> {
       });
     logger.info({ mode: 'webhook' }, 'webhooks registered');
   } else {
-    server = startHttpServer({ port: env.PORT, readiness: () => pingDb(c.db) });
+    server = startHttpServer({ port: env.PORT, readiness: () => pingDb(c.db), pages: { [GOOGLE_CALLBACK_PATH]: (url) => c.calendar.handleCallback(url) } });
     void c.mainBot.start({
       allowed_updates: [...MAIN_ALLOWED_UPDATES],
       onStart: (info) => logger.info({ bot: info.username, mode: 'polling' }, 'main bot polling'),

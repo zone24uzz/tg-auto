@@ -16,6 +16,7 @@ const ADMIN_MENU: Record<AdminCommand, string> = {
   pause: 'Avtojavobni vaqtincha to‘xtatish (/pause 30)',
   resume: 'Avtojavobni davom ettirish',
   privacy: 'Maxfiylik va ma’lumotlar',
+  logs: 'Tizim hodisalari va xatolar',
   help: 'Yordam',
   cancel: 'Kutilayotgan kiritishni bekor qilish',
   start: 'Botni ishga tushirish',

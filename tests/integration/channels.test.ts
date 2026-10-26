@@ -27,7 +27,7 @@ d('channel posts (real PostgreSQL)', () => {
   let tdb: TestDb;
   let ai: ReturnType<typeof fakeAi>;
   let notes: ReturnType<typeof fakeNotifier>;
-  let api: { sendMessage: ReturnType<typeof vi.fn>; leaveChat: ReturnType<typeof vi.fn> };
+  let api: { sendMessage: ReturnType<typeof vi.fn>; leaveChat: ReturnType<typeof vi.fn>; getChatMember: ReturnType<typeof vi.fn> };
   let channels: ChannelService;
   let assistant: OwnerAssistant;
   const cipher = new ContentCipher(KEY);
@@ -49,7 +49,7 @@ d('channel posts (real PostgreSQL)', () => {
     tdb = await createTestDb();
     ai = fakeAi();
     notes = fakeNotifier();
-    api = { sendMessage: vi.fn(async () => ({ message_id: 42 })), leaveChat: vi.fn(async () => true) };
+    api = { sendMessage: vi.fn(async () => ({ message_id: 42 })), leaveChat: vi.fn(async () => true), getChatMember: vi.fn(async () => ({ status: 'creator' })) };
     channels = new ChannelService({ db: tdb.db, ai: ai.ai, cipher, api: api as never, notifier: notes.notifier, button: (v, id) => `as|cp|${v}|${id}` });
     assistant = new OwnerAssistant({
       db: tdb.db, ai: ai.ai, cipher, notifier: notes.notifier, queue: new PgQueue(tdb.db),
@@ -122,6 +122,29 @@ d('channel posts (real PostgreSQL)', () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('a news post needs web search: with search the draft is grounded, without it nothing is invented', async () => {
+    await channels.onMembership(membership('administrator'));
+    say({ action: 'channel_post', text: 'AI haqida yangilik', needs_search: true });
+    ai.raw.generateReply.mockResolvedValueOnce({
+      result: { text: '🤖 AI yangiligi: …', usage: { inputTokens: 1, outputTokens: 1 }, provider: 'gemini', model: 'm', latencyMs: 1, sources: [{ url: 'https://news.example/ai', title: 'news' }] },
+      provider: 'gemini', model: 'm', usedFallback: false, costUsd: 0,
+    } as never);
+    const statuses: string[] = [];
+    const draft = await assistant.handleText('Kanalga post yoz: AI haqida yangilik top', (s) => statuses.push(s));
+    expect(statuses).toEqual(['thinking', 'searching']);
+    expect(ai.raw.generateReply).toHaveBeenCalledWith(expect.objectContaining({ webSearch: true }));
+    expect(draft.text).toContain('Manbalar (postga qo‘shilmaydi)');
+
+    // Search refused (no quota): the next news request is declined instead of inventing news.
+    say({ action: 'channel_post', text: 'yana yangilik', needs_search: true });
+    ai.raw.generateReply.mockRejectedValueOnce(new Error('gemini HTTP 429: quota'));
+    expect((await assistant.handleText('Kanalga post yoz: yana yangilik')).text).toContain('AI hozir javob bermadi');
+    say({ action: 'channel_post', text: 'yana yangilik', needs_search: true });
+    const declined = await assistant.handleText('Kanalga post yoz: yana yangilik');
+    expect(declined.text).toContain('Yangilik to‘qib chiqarmayman');
+    expect(ai.raw.generateReply).toHaveBeenCalledTimes(2);
+  });
+
   it('several channels: the owner picks one', async () => {
     await channels.onMembership(membership('administrator'));
     await tdb.db.channel.create({ data: { telegramChatId: -1009, title: 'Ikkinchi kanal', addedByTelegramUserId: TEST_ADMIN_ID, canPost: true } });
@@ -132,6 +155,19 @@ d('channel posts (real PostgreSQL)', () => {
     nextPost('👋 Salom!');
     const draft = await assistant.handleAction(pick.split('|').slice(1));
     expect(draft.text).toContain('Post loyihasi');
+  });
+
+  it('an owner who lost their channel rights can no longer post (checked at publish time)', async () => {
+    await channels.onMembership(membership('administrator'));
+    say({ action: 'channel_post', text: 'Bugun aksiya!', exact: true });
+    const draft = await assistant.handleText('Kanalga joyla: Bugun aksiya!');
+    const ok = buttonsOf(draft).find((b) => b.startsWith('as|cp|ok|'))!;
+    api.getChatMember.mockResolvedValueOnce({ status: 'member' });
+    const reply = await assistant.handleAction(ok.split('|').slice(1));
+    expect(reply.text).toContain('huquqiga ega admin emassiz');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.getChatMember).toHaveBeenCalledWith(CHANNEL_ID, Number(TEST_ADMIN_ID));
+    expect(await channels.list()).toEqual([]);
   });
 
   it('removing the bot deactivates the channel', async () => {

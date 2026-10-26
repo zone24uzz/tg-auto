@@ -27,6 +27,7 @@ export const DIRECT_MODELS = new Set<string>([
   'AssistantTask',
   'Channel',
   'ChannelPost',
+  'GoogleAccount',
   'SystemEvent',
 ]);
 export const PARENT_MODELS: Readonly<Record<string, string>> = {

@@ -9,7 +9,7 @@ import { runAssistantText } from './views/assistant.js';
 import { applyPause, pauseTarget, resumeAll, showAutoReply } from './views/auto-reply.js';
 import { showHelp, showMainMenu, showStatus } from './views/main.js';
 
-export const COMMANDS = ['start', 'menu', 'status', 'pause', 'resume', 'privacy', 'help', 'cancel', 'tasks'] as const;
+export const COMMANDS = ['start', 'menu', 'status', 'pause', 'resume', 'privacy', 'help', 'cancel', 'tasks', 'logs'] as const;
 type Command = (typeof COMMANDS)[number];
 
 /** Routes that must not clear a pending text input when pressed. */
@@ -96,6 +96,9 @@ async function runCommand(kit: AdminKit, ctx: Context, name: Command, arg: strin
       return;
     case 'tasks':
       await kit.router.go(ctx, 'as|list');
+      return;
+    case 'logs':
+      await kit.router.go(ctx, 'lg|0');
       return;
     case 'cancel': {
       const had = await kit.states.clear(adminId);

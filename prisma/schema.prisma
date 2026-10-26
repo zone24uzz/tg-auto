@@ -666,3 +666,20 @@ model ChannelPost {
   @@index([tenantId, status])
   @@map("channel_posts")
 }
+
+// ───────────────────────────── Google Calendar (super-admin only for now) ─────────────────────────────
+
+/// The workspace owner's Google account connection (OAuth). Tokens are ContentCipher ciphertext.
+model GoogleAccount {
+  tenantId         Int       @id @default(0)
+  email            String?
+  refreshToken     String
+  accessToken      String?
+  expiresAt        DateTime?
+  /// Calendar events already reminded about (bounded list of event ids).
+  remindedEventIds String[]  @default([])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("google_accounts")
+}
