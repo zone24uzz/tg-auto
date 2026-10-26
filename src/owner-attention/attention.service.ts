@@ -5,6 +5,7 @@ import { isUniqueViolation } from '../messages/message.repository.js';
 import type { ContentCipher } from '../security/crypto.js';
 import { displayUser } from '../telegram/common/html.js';
 import type { AdminNotifier } from '../telegram/admin/notifier.js';
+import { decodeDrafts, encodeDrafts } from '../features/drafts.js';
 
 export interface AttentionView {
   id: number;
@@ -26,6 +27,8 @@ export interface AttentionView {
   adminNotificationMessageId: number | null;
   /** A reply for these messages has an unknown delivery outcome (it may have reached the contact). */
   uncertainDelivery: boolean;
+  /** Ready replies the owner can send with one tap. */
+  suggestions: string[];
 }
 
 const STATUS_LINES: Record<AttentionStatus, string> = {
@@ -42,6 +45,7 @@ export const EXTRA_REASON_LABELS: Record<string, string> = {
   PROCESSING_FAILED: 'Xabarni qayta ishlab bo‘lmadi',
   RATE_LIMITED: 'Limitdan oshdi (javob berilmadi)',
   MEDIA_DISABLED: 'Media tahlili o‘chirilgan',
+  OFF_HOURS: 'Ish vaqtidan tashqari kelgan xabar',
 };
 
 /** Low-priority reasons: at most one item per chat per LOW_PRIORITY_WINDOW_MINUTES. */
@@ -78,6 +82,10 @@ export class OwnerAttentionService {
     notify: boolean;
     /** All incoming messages covered by the item (defaults to just `messageId`). */
     burstMessageIds?: number[];
+    /** Suggested replies (shown as one-tap buttons). */
+    suggestions?: string[];
+    /** Notify without sound (e.g. at night, outside working hours). */
+    silent?: boolean;
   }): Promise<number | null> {
     let id: number;
     const burst = [...new Set([...(p.burstMessageIds ?? []), p.messageId])].sort((a, b) => a - b);
@@ -90,6 +98,7 @@ export class OwnerAttentionService {
           burstMessageIds: burst,
           // Derived from message content (classifier reason, errors) → encrypted at rest.
           detail: this.cipher.encrypt(p.detail?.slice(0, 300) ?? null),
+          suggestions: encodeDrafts(this.cipher, p.suggestions ?? []),
         },
       });
       id = row.id;
@@ -105,6 +114,8 @@ export class OwnerAttentionService {
         reason: EXTRA_REASON_LABELS[p.reason] ?? p.reason,
         detail: p.detail,
         waitingMessageSent: p.waitingMessageSent,
+        suggestions: p.suggestions ?? [],
+        ...(p.silent ? { silent: true } : {}),
       });
       if (notificationId)
         await this.db.ownerAttention.update({ where: { id }, data: { adminNotificationMessageId: notificationId } });
@@ -144,6 +155,7 @@ export class OwnerAttentionService {
       senderTelegramUserId: row.message.sender?.telegramUserId ?? null,
       adminNotificationMessageId: row.adminNotificationMessageId,
       uncertainDelivery: uncertain > 0,
+      suggestions: decodeDrafts(this.cipher, row.suggestions),
     };
   }
 
@@ -166,7 +178,15 @@ export class OwnerAttentionService {
     if (minutes <= 0) return false;
     const since = new Date(Date.now() - minutes * 60_000);
     const count = await this.db.aiResponse.count({
-      where: { chatId, kind: { in: ['PERSONAL_NOTICE', 'FALLBACK'] }, status: 'SENT', createdAt: { gte: since } },
+      where: { chatId, kind: { in: ['PERSONAL_NOTICE', 'FALLBACK', 'STATUS_NOTICE'] }, status: 'SENT', createdAt: { gte: since } },
+    });
+    return count > 0;
+  }
+
+  /** Was an off-hours / busy notice sent in this chat within `minutes`? */
+  async recentStatusNoticeInChat(chatId: number, minutes: number): Promise<boolean> {
+    const count = await this.db.aiResponse.count({
+      where: { chatId, kind: 'STATUS_NOTICE', status: 'SENT', createdAt: { gte: new Date(Date.now() - minutes * 60_000) } },
     });
     return count > 0;
   }

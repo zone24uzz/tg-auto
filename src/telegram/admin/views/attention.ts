@@ -16,7 +16,7 @@ export type AttentionItem = Pick<
   AttentionView,
   'id' | 'status' | 'reason' | 'detail' | 'createdAt' | 'messageId' | 'text' | 'userLabel' | 'senderTelegramUserId'
 > &
-  Partial<Pick<AttentionView, 'uncertainDelivery'>>;
+  Partial<Pick<AttentionView, 'uncertainDelivery' | 'suggestions'>>;
 
 const MAY_HAVE_BEEN_DELIVERED =
   '⚠️ Avvalgi javob mijozga yetib borgan bo‘lishi mumkin (Telegram natijani tasdiqlamadi). Avval chatni tekshiring.';
@@ -54,6 +54,11 @@ export function buildAttentionItem(it: AttentionItem, now: Date, timezone: strin
     '💬 Xabar:',
     `«${fit(it.text, 1500)}»`,
   ];
+  const drafts = pending ? (it.suggestions ?? []) : [];
+  if (drafts.length > 0) {
+    lines.push('', '📝 <b>Tayyor javoblar</b> — raqamni bossangiz, sizning nomingizdan yuboriladi:');
+    drafts.forEach((d, i) => lines.push(`${i + 1}. ${fit(d, 300)}`));
+  }
   if (pending && it.uncertainDelivery) lines.push('', MAY_HAVE_BEEN_DELIVERED);
   if (!pending) lines.push('', RESOLVED);
   const kb = new Kb();
@@ -69,6 +74,7 @@ export function buildAttentionItem(it: AttentionItem, now: Date, timezone: strin
       kb.row(btn('⚠️ Tasdiqlayman (Bajarish)', cb(ROUTES.attentionAi, it.id, 't2')))
         .row(btn('🚫 Bekor qilish', cb(ROUTES.attentionIgnore, it.id, 'v')));
     } else {
+      if (drafts.length > 0) kb.row(...drafts.map((_, i) => btn(`✉️ ${i + 1}`, cb(ROUTES.attentionDraft, it.id, i, 'v'))));
       kb.row(btn('💬 Reply', cb(ROUTES.attentionReply, it.id, 'v')), btn('🤖 Let AI reply', cb(ROUTES.attentionAi, it.id, 'v')))
         .row(btn('🚫 Ignore', cb(ROUTES.attentionIgnore, it.id, 'v')))
         .row(it.senderTelegramUserId !== null ? btn('👤 Always manual for this user', cb(ROUTES.attentionManual, it.id, 'v')) : null);
@@ -94,6 +100,8 @@ async function markNotification(ctx: Context, id: number, outcome: string): Prom
 
 export function registerAttention(kit: AdminKit): void {
   const { router, deps } = kit;
+  /** Attention items whose suggested reply is being sent right now. */
+  const draftsSending = new Set<number>();
 
   /** `v` = pressed inside the item view (re-render it); otherwise it came from a notification. */
   const fromView = (flag: string | undefined) => flag === 'v';
@@ -249,6 +257,37 @@ export function registerAttention(kit: AdminKit): void {
     }
     return jobId === null ? '🤖 AI javob allaqachon tayyorlanmoqda…' : '🤖 AI javob tayyorlayapti…';
   });
+
+  /** One of the suggested replies: sent exactly like an owner-typed reply (same delivery safety). */
+  router.action(ROUTES.attentionDraft, async (ctx, [raw, index, flag]) => {
+    const id = intId(raw);
+    if (id === null) return { text: 'Element topilmadi.', alert: true };
+    // A double tap (or ✉️ 1 then ✉️ 2) must never send two replies.
+    if (draftsSending.has(id)) return '⏳ Yuborilmoqda…';
+    draftsSending.add(id);
+    try {
+      return await sendDraft(ctx, id, index, flag);
+    } finally {
+      draftsSending.delete(id);
+    }
+  });
+
+  const sendDraft = async (ctx: Context, id: number, index: string | undefined, flag: string | undefined) => {
+    const item = await deps.attention.get(id);
+    if (!item) return { text: 'Element topilmadi.', alert: true };
+    if (item.status !== 'PENDING') return { text: RESOLVED, alert: true };
+    const text = item.suggestions[Number(index)];
+    if (!text) return { text: 'Bu variant eskirgan.', alert: true };
+    // A reply that may already have been delivered is never re-sent with one tap.
+    if (item.uncertainDelivery) return { text: MAY_HAVE_BEEN_DELIVERED, alert: true };
+    const result = await deps.pipeline.ownerManualReply(item.id, text, adminIdOf(kit, ctx));
+    if (fromView(flag)) await showItem(ctx, item.id);
+    else if (result === 'sent') await markNotification(ctx, item.id, `✅ ${Number(index) + 1}-variant yuborildi`);
+    if (result === 'sent') return '✅ Yuborildi';
+    if (result === 'resolved') return { text: RESOLVED, alert: true };
+    if (result === 'uncertain' || result === 'confirm') return { text: MAY_HAVE_BEEN_DELIVERED, alert: true };
+    return { text: '❌ Yuborib bo‘lmadi. Telegram Business ulanishini tekshiring.', alert: true };
+  };
 
   router.action(ROUTES.attentionIgnore, async (ctx, [raw, flag]) => {
     const id = intId(raw);

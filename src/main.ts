@@ -113,6 +113,8 @@ async function main(): Promise<void> {
     connections: c.connections,
     cleanup: c.cleanup,
     assistant: c.assistant,
+    daily: c.daily,
+    style: c.style,
     access,
     onboarding,
   });

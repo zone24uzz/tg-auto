@@ -18,6 +18,8 @@ import type { UsageService } from '../../statistics/usage.service.js';
 import type { UsersService } from '../../users/users.service.js';
 import type { AccessService } from '../../tenancy/access.service.js';
 import type { ConnectionService } from '../main/connection.service.js';
+import type { DailyService } from '../../features/daily.service.js';
+import type { StyleService } from '../../features/style.service.js';
 
 /** Everything the admin bot UI needs. Built in src/app/container.ts. */
 export interface AdminDeps {
@@ -45,6 +47,10 @@ export interface AdminDeps {
   cleanup: CleanupService;
   /** Owner's personal assistant (free-text commands, /tasks). Optional: absent → plain hint. */
   assistant?: AssistantPort;
+  /** Daily routines (busy mode, morning summary, backups) for the ✨ Yordamchi screen. */
+  daily?: Pick<DailyService, 'setBusy' | 'clearBusy' | 'morningSummaryText' | 'sendBackup'>;
+  /** Learns the owner's writing style ("✍️ Hozir o'rganish"). */
+  style?: Pick<StyleService, 'learn'>;
   /** Super-admin access decisions (Access menu). */
   access?: AccessService;
   /** First contact for people without an active workspace (/start → settings → access request). */

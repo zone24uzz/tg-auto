@@ -2,7 +2,9 @@ import { z } from 'zod';
 import type { Env } from '../config/env.js';
 import { PROVIDER_IDS } from '../config/env.js';
 import {
+  defaultBusyReply,
   defaultFallbackReply,
+  defaultOffHoursReply,
   defaultOwnerRequiredReply,
   defaultMediaTooLargeReply,
   defaultPersonalReply,
@@ -11,6 +13,7 @@ import {
 
 const provider = z.enum(PROVIDER_IDS);
 const shortText = z.string().trim().min(1).max(1000);
+const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'HH:MM');
 const modelId = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9._:/@-]+$/, 'invalid model id');
 
 export const REPLY_MODES = ['ALL_ALLOWED', 'NEW_CHATS_ONLY', 'NON_CONTACTS_ONLY', 'ALLOWLIST_ONLY', 'CUSTOM'] as const;
@@ -18,6 +21,7 @@ export const RESPONSE_STYLES = ['NATURAL', 'FRIENDLY', 'PROFESSIONAL', 'VERY_SHO
 export const RESPONSE_LENGTHS = ['SHORT', 'NORMAL', 'DETAILED'] as const;
 export const DELAY_MODES = ['OFF', 'FAST', 'NATURAL', 'CUSTOM'] as const;
 export const VOICE_MODES = ['text', 'voice', 'adaptive'] as const;
+export const OFF_HOURS_MODES = ['NOTICE', 'AI', 'SILENT'] as const;
 
 /**
  * Every runtime setting the owner can change from the admin bot.
@@ -119,9 +123,46 @@ export const settingsShape = {
   notifyDeletes: z.boolean(),
   notifyOwnerAttention: z.boolean(),
 
+  // ── owner's writing style (learned from the owner's own messages) ──
+  /** Short description of how the owner writes; added to the reply prompt. Empty = not learned yet. */
+  styleProfile: z.string().max(2000),
+  styleLearnedAt: z.string().datetime().nullable(),
+  useStyleProfile: z.boolean(),
+
+  // ── reply drafts for the owner (personal questions) ──
+  replyDraftsEnabled: z.boolean(),
+
+  // ── working hours ──
+  workHoursEnabled: z.boolean(),
+  workStart: clock,
+  workEnd: clock,
+  /** Days off (0 = Sunday … 6 = Saturday): the whole day counts as outside working hours. */
+  weekendDays: z.array(z.number().int().min(0).max(6)).max(7),
+  /** Outside working hours: NOTICE = one notice per chat, then the owner; AI = answer as usual; SILENT = owner only. */
+  offHoursMode: z.enum(OFF_HOURS_MODES),
+  offHoursText: shortText,
+
+  // ── "busy now" ──
+  /** ISO timestamp; while in the future the owner is busy (contacts may be told so). */
+  busyUntil: z.string().datetime().nullable(),
+  busyNote: z.string().max(200),
+  busyReplyText: shortText,
+
+  // ── spam / scam protection ──
+  scamProtectionEnabled: z.boolean(),
+  scamWarnOwner: z.boolean(),
+
+  // ── daily routines ──
+  morningSummaryEnabled: z.boolean(),
+  morningSummaryTime: clock,
+  birthdayRemindersEnabled: z.boolean(),
+  dailyBackupEnabled: z.boolean(),
+
   // ── internal bookkeeping (not shown in menus) ──
   lastCleanupAt: z.string().datetime().nullable(),
   costLimitNotifiedOn: z.string().max(10).nullable(),
+  morningSummarySentOn: z.string().max(10).nullable(),
+  backupDoneOn: z.string().max(10).nullable(),
 } as const;
 
 export const settingsSchema = z.object(settingsShape);
@@ -213,7 +254,34 @@ export function buildDefaultSettings(env: Env): Settings {
     notifyDeletes: true,
     notifyOwnerAttention: true,
 
+    styleProfile: '',
+    styleLearnedAt: null,
+    useStyleProfile: true,
+
+    replyDraftsEnabled: true,
+
+    workHoursEnabled: false,
+    workStart: '09:00',
+    workEnd: '21:00',
+    weekendDays: [0],
+    offHoursMode: 'NOTICE',
+    offHoursText: defaultOffHoursReply(owner),
+
+    busyUntil: null,
+    busyNote: '',
+    busyReplyText: defaultBusyReply(owner),
+
+    scamProtectionEnabled: true,
+    scamWarnOwner: true,
+
+    morningSummaryEnabled: true,
+    morningSummaryTime: '08:00',
+    birthdayRemindersEnabled: true,
+    dailyBackupEnabled: true,
+
     lastCleanupAt: null,
     costLimitNotifiedOn: null,
+    morningSummarySentOn: null,
+    backupDoneOn: null,
   };
 }

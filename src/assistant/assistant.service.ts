@@ -11,9 +11,14 @@ import type { PgQueue } from '../queues/pg-queue.js';
 import type { ContentCipher } from '../security/crypto.js';
 import { cb } from '../telegram/admin/callback-data.js';
 import { escapeHtml } from '../telegram/common/html.js';
-import { formatDateTime, startOfDayInTz } from '../utils/time.js';
+import { formatDateTime, formatTime, startOfDayInTz } from '../utils/time.js';
 import { currentTenantOrNull } from '../tenancy/context.js';
 import { T } from '../onboarding/texts.js';
+import type { DailyService } from '../features/daily.service.js';
+import { formatBirthday, normalizeBirthday } from '../features/daily.service.js';
+import { fillNotice } from '../features/availability.js';
+import type { StyleService } from '../features/style.service.js';
+import type { SettingsService } from '../settings/settings.service.js';
 import { parseOwnerIntent, type OwnerIntent } from './intent.js';
 import { PersonResolver, type PersonCandidate } from './resolver.js';
 
@@ -39,7 +44,7 @@ export interface AssistantReply {
 }
 
 /** What the assistant is doing right now (shown live in the admin chat). */
-export type AssistantStatus = 'thinking' | 'searching' | 'database' | 'writing' | 'calendar';
+export type AssistantStatus = 'thinking' | 'searching' | 'database' | 'writing' | 'calendar' | 'learning';
 
 /** The admin UI depends only on this. */
 export interface AssistantPort {
@@ -60,6 +65,11 @@ export interface AssistantDeps {
   channels?: ChannelService;
   /** Google Calendar (super-admin only for now). */
   calendar?: CalendarService;
+  /** Daily routines: busy mode, morning summary, birthdays, backups. */
+  daily?: DailyService;
+  /** Learns the owner's writing style. */
+  style?: StyleService;
+  settings?: SettingsService;
   events?: Pick<EventLog, 'info' | 'warn'>;
   now?: () => Date;
 }
@@ -80,6 +90,10 @@ const HELP = [
   '• <i>Vazifalarim</i> yoki /tasks · <i>Firdavs kuzatuvini o‘chir</i>',
   '• <i>Kanalga post yoz: yangi xizmatimiz haqida</i> (joylashdan oldin tasdiqlaysiz) · <i>Kanallarim</i>',
   '• <i>Bugun nima rejalarim bor?</i> · <i>Ertaga 15:00 ga Ali bilan uchrashuv qo‘sh</i> (Google Calendar)',
+  '• <i>2 soat uchrashuvdaman</i> — «bandman» rejimi · <i>bo‘shadim</i> — o‘chirish',
+  '• <i>Ish vaqtim 9 dan 18 gacha</i> · <i>Uslubimni o‘rgan</i>',
+  '• <i>Alining tug‘ilgan kuni 12-mart</i> · <i>Tug‘ilgan kunlar</i>',
+  '• <i>Bugungi xulosa</i> · <i>Zaxira nusxa ol</i>',
 ].join('\n');
 
 /**
@@ -103,6 +117,11 @@ export class OwnerAssistant implements AssistantPort {
 
   private get userbot(): UserbotAssistantApi | null {
     return this.userbotOf();
+  }
+
+  /** The current workspace's userbot helpers (null when not logged in). */
+  userbotApi(): UserbotAssistantApi | null {
+    return this.userbot;
   }
 
   attachUserbot(api: UserbotAssistantApi | null | (() => UserbotAssistantApi | null)): void {
@@ -159,6 +178,27 @@ export class OwnerAssistant implements AssistantPort {
       case 'calendar_list':
       case 'calendar_add':
         return this.calendarCommand(intent, onStatus);
+      case 'busy_set':
+      case 'busy_clear':
+      case 'work_hours':
+        return this.availabilityCommand(intent);
+      case 'learn_style':
+        onStatus('learning');
+        return this.learnStyle();
+      case 'birthday_set':
+        onStatus('database');
+        return this.birthdaySet(intent);
+      case 'birthdays_list':
+        onStatus('database');
+        return this.birthdaysList();
+      case 'morning_summary':
+        if (!this.d.daily) return { text: HELP };
+        onStatus('calendar');
+        return this.d.daily.morningSummaryText();
+      case 'backup_now':
+        if (!this.d.daily) return { text: HELP };
+        onStatus('database');
+        return { text: await this.d.daily.sendBackup() };
       case 'help':
         return { text: HELP };
       default:
@@ -203,6 +243,80 @@ export class OwnerAssistant implements AssistantPort {
       log.warn({ error: describeError(error) }, 'channel draft failed');
       return { text: '❌ AI hozir javob bermadi (Google tomonida sekinlik). Birozdan keyin qaytadan yozing.' };
     }
+  }
+
+  /** Busy mode on/off and working hours. */
+  private async availabilityCommand(intent: OwnerIntent): Promise<AssistantReply> {
+    const daily = this.d.daily;
+    const settings = this.d.settings;
+    if (!daily || !settings) return { text: HELP };
+    const tz = this.d.timezone;
+    if (intent.action === 'busy_clear')
+      return { text: (await daily.clearBusy()) ? '🟢 «Bandman» rejimi o‘chirildi.' : 'ℹ️ «Bandman» rejimi yoqilmagan edi.' };
+    if (intent.action === 'work_hours') {
+      if (!intent.startAt || !intent.endAt) return { text: '🕘 Ish vaqtini aniq yozing, masalan: <i>ish vaqtim 9:00 dan 18:00 gacha</i>.' };
+      const start = formatTime(intent.startAt, tz);
+      const end = formatTime(intent.endAt, tz);
+      await settings.set('workStart', start);
+      await settings.set('workEnd', end);
+      await settings.set('workHoursEnabled', true);
+      return {
+        text: `🕘 Ish vaqti: <b>${start}–${end}</b> (yoqildi). Undan tashqari mijozlarga «${escapeHtml(start)} dan keyin javob beraman» degan xabar boradi.\nDam olish kunlari va rejimni menyuda o‘zgartirasiz: /menu → ✨ Yordamchi.`,
+      };
+    }
+    const now = this.now();
+    let until = intent.endAt ?? new Date(now.getTime() + 3_600_000);
+    if (until.getTime() <= now.getTime()) return { text: '⏳ Qachongacha bandsiz? Masalan: <i>2 soat uchrashuvdaman</i> yoki <i>17:00 gacha bandman</i>.' };
+    if (until.getTime() > now.getTime() + 7 * 86_400_000) until = new Date(now.getTime() + 7 * 86_400_000);
+    const note = (intent.text ?? '').slice(0, 60);
+    await daily.setBusy(until, note);
+    const s = await settings.get();
+    const preview = fillNotice(s.busyReplyText, { owner: s.ownerName, note, until, timezone: tz });
+    return {
+      text: `⏳ <b>«Bandman» rejimi ${formatTime(until, tz)} gacha</b>${note ? ` (${escapeHtml(note)})` : ''}.\n\nShaxsiy savollarga mijozlarga shunday javob boradi:\n«${escapeHtml(preview)}»\nOddiy savollarga AI odatdagidek javob beradi.`,
+      buttons: [[{ label: '🟢 Bo‘shadim (o‘chirish)', data: cb(ASSISTANT_ROUTE, 'busy', 'off') }]],
+    };
+  }
+
+  private async learnStyle(): Promise<AssistantReply> {
+    if (!this.d.style) return { text: HELP };
+    const result = await this.d.style.learn();
+    if (result.ok)
+      return { text: `✍️ <b>Uslubingizni o‘rgandim</b> (${result.messages} ta xabaringizdan). Endi AI shunday yozadi:\n\n${escapeHtml(result.profile)}\n\n<i>Har hafta avtomatik yangilanadi. O‘chirish: /menu → ✨ Yordamchi.</i>` };
+    if (result.reason === 'too_few')
+      return { text: `✍️ Uslubni o‘rganish uchun kamida 20 ta o‘zingiz yozgan xabar kerak (hozir ${result.messages} ta). Chatlarda yozishda davom eting — keyin avtomatik o‘rganaman.` };
+    return { text: '❌ AI hozir javob bermadi. Birozdan keyin qaytadan urinib ko‘ring.' };
+  }
+
+  private async birthdaySet(intent: OwnerIntent): Promise<AssistantReply> {
+    if (!this.d.daily) return { text: HELP };
+    if (!intent.person) return { text: '🎂 Kimning tug‘ilgan kuni? Masalan: <i>Alining tug‘ilgan kuni 12-mart</i>.' };
+    if (!intent.startAt) return { text: `🎂 ${escapeHtml(intent.person)}ning tug‘ilgan kuni qachon? Masalan: <i>12-mart</i>.` };
+    const found = await this.resolver.resolve(intent.person);
+    if (found.status === 'none') return { text: `🔎 «${escapeHtml(intent.person)}» ni topa olmadim. Uning @username ini yoki Telegram ID sini yozing.` };
+    if (found.status === 'many')
+      return { text: `👥 «${escapeHtml(intent.person)}» bir nechta: ${found.candidates.map((c) => escapeHtml(c.label)).join(', ')}. @username bilan aniqroq yozing.` };
+    const withYear = /\b(19|20)\d{2}\b/.test(intent.text ?? '');
+    const birthday = normalizeBirthday(intent.startAt, withYear, this.d.timezone);
+    let user = await this.d.db.telegramUser.findFirst({ where: { telegramUserId: found.person.telegramUserId } });
+    user ??= await this.d.db.telegramUser.create({ data: { telegramUserId: found.person.telegramUserId, firstName: found.person.label.slice(0, 64) } });
+    await this.d.daily.setBirthday(user.id, birthday);
+    return { text: `🎂 Saqladim: <b>${escapeHtml(found.person.label)}</b> — ${formatBirthday(birthday)}. O‘sha kuni ertalab eslataman va tabrik variantini tayyorlab beraman.` };
+  }
+
+  private async birthdaysList(): Promise<AssistantReply> {
+    const daily = this.d.daily;
+    if (!daily) return { text: HELP };
+    await daily.syncTelegramBirthdays().catch((error: unknown) => log.debug({ error: describeError(error) }, 'birthday sync failed'));
+    const upcoming = await daily.upcomingBirthdays(30);
+    if (upcoming.length === 0)
+      return { text: '🎂 Keyingi 30 kunda tug‘ilgan kun yo‘q (yoki hali bilmayman).\nQo‘shish: <i>Alining tug‘ilgan kuni 12-mart</i>. Userbot ulangan bo‘lsa, Telegram’dagi kontaktlaringiz tug‘ilgan kunlarini o‘zim olaman.' };
+    const lines = ['🎂 <b>Yaqin tug‘ilgan kunlar (30 kun)</b>', ''];
+    for (const u of upcoming.slice(0, 30)) {
+      const name = escapeHtml(labelOf(u.user));
+      lines.push(`• ${formatBirthday(u.date)} — ${name}${u.inDays === 0 ? ' — <b>bugun!</b>' : u.inDays === 1 ? ' — ertaga' : ` — ${u.inDays} kundan keyin`}`);
+    }
+    return { text: lines.join('\n') };
   }
 
   private async calendarCommand(intent: OwnerIntent, onStatus: (status: AssistantStatus) => void): Promise<AssistantReply> {
@@ -351,6 +465,13 @@ export class OwnerAssistant implements AssistantPort {
     const [verb, a, b] = args;
     if (verb === 'cp') return this.channelAction(a, Number(b));
     if (verb === 'cal') return this.calendarAction(a);
+    if (verb === 'busy') return { text: (await this.d.daily?.clearBusy()) ? '🟢 «Bandman» rejimi o‘chirildi.' : 'ℹ️ «Bandman» rejimi yoqilmagan edi.' };
+    if (verb === 'bd') {
+      const userId = Number(a);
+      const user = Number.isInteger(userId) ? await this.d.db.telegramUser.findUnique({ where: { id: userId } }) : null;
+      if (!user || !this.d.daily) return { text: 'ℹ️ Bu tugma eskirgan.' };
+      return this.d.daily.greetingReply(user);
+    }
     const id = Number(a);
     switch (verb) {
       case 'list':

@@ -11,6 +11,7 @@ import { registerAdvanced } from './views/advanced.js';
 import { registerAssistant } from './views/assistant.js';
 import { registerAttention } from './views/attention.js';
 import { registerAutoReply } from './views/auto-reply.js';
+import { registerFeatures } from './views/features.js';
 import { registerHistory } from './views/history.js';
 import { registerLists } from './views/lists.js';
 import { registerLogs } from './views/logs.js';
@@ -48,6 +49,7 @@ export function createAdminKit(deps: AdminDeps): AdminKit {
   registerLogs(kit);
   registerPrivacy(kit);
   registerAssistant(kit);
+  registerFeatures(kit);
   registerAccess(kit);
   return kit;
 }

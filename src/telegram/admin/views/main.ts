@@ -46,6 +46,7 @@ export function buildMainMenu(d: MainData): View {
     btn('🎭 Response Style', 'st'),
     btn('📏 Response Length', 'ln'),
     btn('🔒 Personal Questions', 'pq'),
+    btn('✨ Yordamchi', 'fx'),
     btn('📷 Image Analysis', 'md.i'),
     btn('🎙 Voice Analysis', 'md.v'),
     btn('🎥 Video Analysis', 'md.vd'),

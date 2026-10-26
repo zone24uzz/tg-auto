@@ -1,4 +1,4 @@
-import { InlineKeyboard, type Api } from 'grammy';
+import { InlineKeyboard, InputFile, type Api } from 'grammy';
 import type { EventLog } from '../../logging/events.js';
 import { childLogger } from '../../logging/logger.js';
 import { describeError } from '../../logging/sanitize.js';
@@ -51,12 +51,13 @@ export class AdminNotifier {
     return currentTenantOrNull()?.ownerTelegramUserId ?? this.superAdminChatId;
   }
 
-  private async send(html: string, keyboard?: InlineKeyboard): Promise<number | undefined> {
+  private async send(html: string, keyboard?: InlineKeyboard, opts: { silent?: boolean } = {}): Promise<number | undefined> {
     try {
       const sent = await this.api.sendMessage(Number(this.adminChatId), clampMessage(html), {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
         ...(keyboard ? { reply_markup: keyboard } : {}),
+        ...(opts.silent ? { disable_notification: true } : {}),
       });
       return sent.message_id;
     } catch (error) {
@@ -67,8 +68,34 @@ export class AdminNotifier {
     }
   }
 
-  async text(html: string): Promise<number | undefined> {
-    return this.send(html);
+  /** `buttons`: rows of { label, callback data } (callback data must already be valid). */
+  async text(html: string, opts: { silent?: boolean; buttons?: Array<Array<{ label: string; data: string }>> } = {}): Promise<number | undefined> {
+    let keyboard: InlineKeyboard | undefined;
+    if (opts.buttons && opts.buttons.length > 0) {
+      keyboard = new InlineKeyboard();
+      for (const row of opts.buttons) {
+        for (const b of row) keyboard.text(b.label, b.data);
+        keyboard.row();
+      }
+    }
+    return this.send(html, keyboard, opts);
+  }
+
+  /** A file for the owner (e.g. the daily backup). Never throws; false when it could not be sent. */
+  async document(file: Buffer, filename: string, caption: string, opts: { silent?: boolean } = {}): Promise<boolean> {
+    try {
+      await this.api.sendDocument(Number(this.adminChatId), new InputFile(file, filename), {
+        caption: clampMessage(caption).slice(0, 1000),
+        parse_mode: 'HTML',
+        ...(opts.silent ? { disable_notification: true } : {}),
+      });
+      return true;
+    } catch (error) {
+      const desc = describeError(error);
+      log.warn({ error: desc }, 'admin document failed');
+      await this.events?.warn('admin-notifier', `document failed: ${desc}`);
+      return false;
+    }
   }
 
   async ownerAttention(p: {
@@ -78,9 +105,17 @@ export class AdminNotifier {
     reason: string;
     detail?: string;
     waitingMessageSent: boolean;
+    /** Ready replies: one button each ("✉️ 1" sends the first one). */
+    suggestions?: string[];
+    silent?: boolean;
   }): Promise<number | undefined> {
-    const kb = new InlineKeyboard()
-      .text('💬 Javob yozish', cb(ROUTES.attentionReply, p.attentionId))
+    const kb = new InlineKeyboard();
+    const drafts = (p.suggestions ?? []).slice(0, 3);
+    if (drafts.length > 0) {
+      drafts.forEach((_, i) => kb.text(`✉️ ${i + 1}`, cb(ROUTES.attentionDraft, p.attentionId, i)));
+      kb.row();
+    }
+    kb.text('💬 Javob yozish', cb(ROUTES.attentionReply, p.attentionId))
       .text('🤖 AI javob bersin', cb(ROUTES.attentionAi, p.attentionId))
       .row()
       .text('🚫 E’tiborsiz', cb(ROUTES.attentionIgnore, p.attentionId))
@@ -95,7 +130,30 @@ export class AdminNotifier {
       `Sabab: ${quote(reasonLabel(p.reason), 100)}${p.detail ? ` — <i>${quote(p.detail, 160)}</i>` : ''}`,
       p.waitingMessageSent ? '✉️ Kutish xabari yuborildi.' : '✉️ Foydalanuvchiga hech narsa yuborilmadi.',
     ];
-    return this.send(lines.join('\n'), kb);
+    if (drafts.length > 0) {
+      lines.push('', '📝 <b>Tayyor javoblar</b> — raqamni bossangiz, sizning nomingizdan yuboriladi:');
+      drafts.forEach((d, i) => lines.push(`${i + 1}. ${quote(d, 300)}`));
+    }
+    return this.send(lines.join('\n'), kb, p.silent ? { silent: true } : {});
+  }
+
+  /** A message looked like a scam / phishing: it got no reply; offer to block the sender. */
+  async scamWarning(p: { userLabel: string; text: string; reasons: string[]; messageId: number; senderTelegramUserId: bigint | null }): Promise<void> {
+    const kb = new InlineKeyboard();
+    if (p.senderTelegramUserId !== null) kb.text('🚫 Bloklash', cb(ROUTES.scamBlock, p.senderTelegramUserId));
+    kb.text('🔎 Xabar', cb(ROUTES.messageOpen, p.messageId));
+    await this.send(
+      [
+        '🛡 <b>Firibgarlik / spam ehtimoli</b>',
+        '',
+        `👤 ${quote(p.userLabel, 80)}`,
+        `«${quote(p.text, 600)}»`,
+        '',
+        `Belgilar: ${quote(p.reasons.join(', '), 200)}`,
+        'AI javob bermadi. Havolalarni ochmang, kod yoki karta ma’lumotlarini hech kimga bermang.',
+      ].join('\n'),
+      kb,
+    );
   }
 
   async messageEdited(p: {

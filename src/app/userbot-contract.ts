@@ -71,6 +71,8 @@ export interface UserbotAssistantApi {
   resolveUsername(username: string): Promise<ResolvedTelegramUser | null>;
   /** Searches the owner's own contacts and chats by name (contacts.Search "my results" only). */
   searchPeople(query: string, limit?: number): Promise<ResolvedTelegramUser[]>;
+  /** Birthdays Telegram shows the owner for their contacts (contacts.GetBirthdays); `birthday` = MM-DD or YYYY-MM-DD. */
+  birthdays?(): Promise<Array<ResolvedTelegramUser & { birthday: string }>>;
 }
 
 export type UserbotStatus =

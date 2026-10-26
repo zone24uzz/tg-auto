@@ -22,6 +22,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:local": "tsx scripts/local-db.ts",
     "whoami": "tsx scripts/whoami.ts",
+    "backup:restore": "tsx scripts/backup-restore.ts",
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {

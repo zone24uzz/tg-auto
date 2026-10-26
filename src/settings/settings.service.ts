@@ -25,7 +25,7 @@ const PROVIDER_KEYS = new Set<SettingKey>([
   'ttsProvider',
 ]);
 /** Internal keys are changed by the system, never audited as admin actions. */
-const INTERNAL_KEYS = new Set<SettingKey>(['lastCleanupAt', 'costLimitNotifiedOn']);
+const INTERNAL_KEYS = new Set<SettingKey>(['lastCleanupAt', 'costLimitNotifiedOn', 'morningSummarySentOn', 'backupDoneOn', 'styleLearnedAt']);
 
 export class SettingValidationError extends Error {
   constructor(

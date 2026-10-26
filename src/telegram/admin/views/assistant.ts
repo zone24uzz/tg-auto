@@ -14,9 +14,9 @@ export function assistantView(reply: AssistantReply): View {
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const STATUS_LABEL: Record<Lang, Record<AssistantStatus, string>> = {
-  uz: { thinking: '🤔 O‘ylayapman', searching: '🔎 Google’dan qidiryapman', database: '📇 Bazadan qidiryapman', writing: '✍️ Post yozyapman', calendar: '📅 Kalendarni ko‘ryapman' },
-  ru: { thinking: '🤔 Думаю', searching: '🔎 Ищу в Google', database: '📇 Ищу в базе', writing: '✍️ Пишу пост', calendar: '📅 Смотрю календарь' },
-  en: { thinking: '🤔 Thinking', searching: '🔎 Searching Google', database: '📇 Looking it up', writing: '✍️ Writing the post', calendar: '📅 Checking your calendar' },
+  uz: { thinking: '🤔 O‘ylayapman', searching: '🔎 Google’dan qidiryapman', database: '📇 Bazadan qidiryapman', writing: '✍️ Post yozyapman', calendar: '📅 Kalendarni ko‘ryapman', learning: '✍️ Uslubingizni o‘rganyapman' },
+  ru: { thinking: '🤔 Думаю', searching: '🔎 Ищу в Google', database: '📇 Ищу в базе', writing: '✍️ Пишу пост', calendar: '📅 Смотрю календарь', learning: '✍️ Изучаю ваш стиль' },
+  en: { thinking: '🤔 Thinking', searching: '🔎 Searching Google', database: '📇 Looking it up', writing: '✍️ Writing the post', calendar: '📅 Checking your calendar', learning: '✍️ Learning your style' },
 };
 /** Draft frames: Telegram animates changes of the same draft natively, so they can be frequent. */
 const DRAFT_FRAME_MS = 700;

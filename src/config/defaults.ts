@@ -8,6 +8,16 @@ export function defaultOwnerRequiredReply(ownerName: string): string {
   return `Bu savolga ${ownerName} o‘zi aniq javob beradi, biroz kuting 🙂`;
 }
 
+/** Off-hours notice. Placeholders: {owner}, {start} (start of working hours). */
+export function defaultOffHoursReply(ownerName: string): string {
+  return `Assalomu alaykum! Hozir ish vaqtidan tashqari. ${ownerName} {start} dan keyin javob beradi 🙂`;
+}
+
+/** "Busy now" notice. Placeholders: {owner}, {note} (e.g. "uchrashuvda"), {until} (HH:MM). */
+export function defaultBusyReply(ownerName: string): string {
+  return `${ownerName} hozir band ({note}). Taxminan {until} dan keyin javob beradi 🙂`;
+}
+
 export function defaultFallbackReply(ownerName: string): string {
   return `Hozir javob berishda kichik muammo bor. ${ownerName} keyinroq javob beradi.`;
 }

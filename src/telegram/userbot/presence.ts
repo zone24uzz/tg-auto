@@ -105,6 +105,28 @@ export function createAssistantApi(getClient: () => TelegramClient | null): User
       }
     },
 
+    async birthdays() {
+      const client = getClient();
+      if (!client) return [];
+      const found = await client.invoke(new Api.contacts.GetBirthdays());
+      const users = new Map<bigint, Api.User>();
+      for (const u of found.users) {
+        const id = u instanceof Api.User ? toBigIntId(u.id) : undefined;
+        if (id !== undefined) users.set(id, u as Api.User);
+      }
+      const out: Array<ResolvedTelegramUser & { birthday: string }> = [];
+      for (const c of found.contacts) {
+        const id = toBigIntId(c.contactId);
+        const user = id === undefined ? undefined : users.get(id);
+        const resolved = user ? toResolved(user) : null;
+        if (!resolved) continue;
+        const b = c.birthday;
+        const md = `${String(b.month).padStart(2, '0')}-${String(b.day).padStart(2, '0')}`;
+        out.push({ ...resolved, birthday: b.year ? `${b.year}-${md}` : md });
+      }
+      return out;
+    },
+
     async resolveUsername(username) {
       const client = getClient();
       const clean = username.trim().replace(/^@/, '');

@@ -6,6 +6,9 @@ import { ProviderRegistry } from '../ai/registry.js';
 import { ASSISTANT_ROUTE, OwnerAssistant } from '../assistant/assistant.service.js';
 import { ChannelService } from '../channels/channel.service.js';
 import { CalendarService } from '../google/calendar.service.js';
+import { BackupService } from '../features/backup.service.js';
+import { DailyService } from '../features/daily.service.js';
+import { StyleService } from '../features/style.service.js';
 import { cb } from '../telegram/admin/callback-data.js';
 import { AuditService } from '../audit/audit.service.js';
 import { MessageClassifier } from '../classifiers/classifier.js';
@@ -19,7 +22,7 @@ import { Ffmpeg } from '../media/ffmpeg.js';
 import { MediaService } from '../media/media.service.js';
 import { createStorage } from '../media/storage/index.js';
 import { TelegramFileDownloader } from '../media/telegram-file.js';
-import { RoutingFileDownloader } from './userbot-contract.js';
+import { RoutingFileDownloader, type UserbotAssistantApi } from './userbot-contract.js';
 import { HistoryService } from '../messages/history.service.js';
 import { MessageRepository } from '../messages/message.repository.js';
 import { OwnerAttentionService } from '../owner-attention/attention.service.js';
@@ -163,7 +166,25 @@ export function buildContainer(env: Env) {
     superAdminId: env.ADMIN_TELEGRAM_USER_ID,
     timezone: env.TIMEZONE,
   });
-  const assistant = new OwnerAssistant({
+  const style = new StyleService({ db, ai, cipher, settings });
+  const backup = new BackupService({ db, cipher, timezone: env.TIMEZONE });
+  const daily: DailyService = new DailyService({
+    db,
+    ai,
+    cipher,
+    settings,
+    notifier,
+    attention,
+    backup,
+    style,
+    calendar,
+    // The assistant owns the per-workspace userbot accessor (attached at startup).
+    userbot: (): UserbotAssistantApi | null => assistant.userbotApi(),
+    button: (...args) => cb(ASSISTANT_ROUTE, ...args),
+    backupOwnerId: env.ADMIN_TELEGRAM_USER_ID,
+    timezone: env.TIMEZONE,
+  });
+  const assistant: OwnerAssistant = new OwnerAssistant({
     db,
     ai,
     cipher,
@@ -173,6 +194,9 @@ export function buildContainer(env: Env) {
     timezone: env.TIMEZONE,
     channels,
     calendar,
+    daily,
+    style,
+    settings,
     events,
   });
   const business = new BusinessHandlers({
@@ -227,6 +251,9 @@ export function buildContainer(env: Env) {
     tenants,
     channels,
     calendar,
+    style,
+    backup,
+    daily,
   };
 }
 

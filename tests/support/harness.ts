@@ -43,6 +43,11 @@ export function fakeNotifier() {
     messageDeleted: rec('messageDeleted'),
     deletedUnknown: rec('deletedUnknown'),
     markAttentionResolved: rec('markAttentionResolved'),
+    scamWarning: rec('scamWarning'),
+    document: vi.fn(async (file: Buffer, filename: string, caption: string) => {
+      calls.push({ method: 'document', args: { file, filename, caption } });
+      return true;
+    }),
   };
   return { notifier: notifier as unknown as AdminNotifier, calls, raw: notifier };
 }

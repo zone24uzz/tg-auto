@@ -29,6 +29,11 @@ import { remainingDelayMs, targetDelayMs } from './delay.js';
 import { ChatLease } from './lease.js';
 import type { ReplySender, SendOutcome } from './reply-sender.js';
 import { applyResponsePolicy } from './response-policy.js';
+import { availabilityOf, availabilitySection, fillNotice, type Availability } from '../features/availability.js';
+import { generateDrafts } from '../features/drafts.js';
+import { detectLanguage, type ContactLanguage } from '../features/language.js';
+import { localizeNotice, type NoticeKind } from '../features/notices.js';
+import { detectScam, SCAM_THRESHOLD } from '../features/scam.js';
 
 export { isRateLimitFailure } from '../classifiers/ai-errors.js';
 
@@ -53,6 +58,12 @@ export const STALE_MESSAGE_MS = 30 * 60_000;
 /** Low-priority owner items (rate limited / media disabled): at most one per chat per window. */
 const LOW_PRIORITY_WINDOW_MINUTES = 30;
 const OWNER_REPLIED = 'owner replied personally';
+/** One off-hours notice per chat per night. */
+const OFF_HOURS_NOTICE_WINDOW_MINUTES = 10 * 60;
+/** One scam warning per chat in this window. */
+const SCAM_WARNING_WINDOW_MS = 6 * 3_600_000;
+/** Reasons whose owner item gets ready-made reply drafts. */
+const DRAFT_REASONS: ReadonlySet<string> = new Set(['PERSONAL', 'SENSITIVE', 'REQUIRES_OWNER', 'UNKNOWN', 'OFF_HOURS']);
 
 /** Message types whose stored text is a synthetic placeholder, not something the contact typed. */
 const SYNTHETIC_TYPES: ReadonlySet<MessageType> = new Set(['STICKER', 'CONTACT', 'LOCATION', 'POLL', 'OTHER']);
@@ -106,6 +117,10 @@ interface BurstContext {
   lease: ChatLease;
   /** Set for owner-approved replies ("Let AI reply"). */
   attentionId?: number;
+  /** Language of the contact's messages (replies and notices follow it). */
+  language?: ContactLanguage | null;
+  /** Owner-set busy mode / working hours at the time of handling. */
+  availability?: Availability;
 }
 
 /**
@@ -324,7 +339,20 @@ export class ReplyPipeline {
       startedAt: last.createdAt.getTime(),
       injectionSuspected: false,
       lease,
+      language: detectLanguage(texts),
+      availability: availabilityOf(settings, new Date(), this.d.timezone),
     };
+
+    // 3b. Scam / phishing (login codes, card data, "double your money", phishing links): never answered,
+    //     no paid analysis; the owner is warned.
+    if (settings.scamProtectionEnabled) {
+      const scam = detectScam(texts);
+      if (scam.score >= SCAM_THRESHOLD) {
+        await this.setStatuses(burst, 'IGNORED', `scam: ${scam.reasons.join(', ')}`);
+        await this.warnScam({ ...ctxBase, media: emptyMedia() }, scam.reasons);
+        return;
+      }
+    }
 
     // 4. Rate limits (silent: never amplify abuse with replies). The current burst does not count
     //    against its own per-minute limit; per-contact AI usage counts every AI call (media, classifier,
@@ -356,6 +384,13 @@ export class ReplyPipeline {
         await this.ownerPath({ ...ctxBase, media: emptyMedia() }, 'COST_LIMIT', `spent ≈ $${spent.toFixed(2)}`, 'fallback');
         return;
       }
+    }
+
+    // 5b. Outside working hours (notice / silent modes): the owner answers later; no AI reply.
+    //     After the rate limits and the budget, so a flood at night costs nothing extra.
+    if (ctxBase.availability.offHours && settings.offHoursMode !== 'AI') {
+      await this.offHoursPath({ ...ctxBase, media: emptyMedia() });
+      return;
     }
 
     // 6. Media understanding (the daily cap is re-checked right before each paid analysis).
@@ -418,11 +453,15 @@ export class ReplyPipeline {
     });
 
     if (classification.route === 'IGNORE') {
-      await this.setStatuses(burst, 'IGNORED', `classified ${classification.category}`);
+      // Spam with scam-like signals (links, crypto, prizes...) is worth a heads-up.
+      const scam = classification.category === 'SPAM' && settings.scamProtectionEnabled ? detectScam(texts) : null;
+      const scamLike = scam !== null && scam.score > 0;
+      await this.setStatuses(burst, 'IGNORED', `${scamLike ? 'scam-like: ' : ''}classified ${classification.category}`);
+      if (scamLike) await this.warnScam(ctx, scam.reasons);
       return;
     }
     if (classification.route === 'OWNER') {
-      await this.ownerPath(ctx, classification.category, classification.reason, 'personal');
+      await this.ownerPath(ctx, classification.category, classification.reason, 'personal', { drafts: true });
       return;
     }
 
@@ -458,6 +497,8 @@ export class ReplyPipeline {
         injectionSuspected: ctx.injectionSuspected,
         timezone: this.d.timezone,
         ownerApproved,
+        language: ctx.language ?? detectLanguage(ctx.text),
+        availability: ctx.availability ? availabilitySection(ctx.availability, settings.ownerName, this.d.timezone) : '',
       });
 
       let routed;
@@ -598,7 +639,13 @@ export class ReplyPipeline {
    * Hands the conversation to the owner: optional waiting notice (rate-limited per chat),
    * owner-attention item and admin-bot notification.
    */
-  private async ownerPath(ctx: BurstContext, reason: string, detail: string | undefined, notice: 'personal' | 'fallback' | 'none'): Promise<void> {
+  private async ownerPath(
+    ctx: BurstContext,
+    reason: string,
+    detail: string | undefined,
+    notice: 'personal' | 'fallback' | 'none',
+    opts: { drafts?: boolean } = {},
+  ): Promise<void> {
     const { chat, settings, last } = ctx;
     if (await this.ownerReplied(ctx.burst)) {
       await this.setStatuses(ctx.burst, 'MANUAL', OWNER_REPLIED);
@@ -607,12 +654,18 @@ export class ReplyPipeline {
     let waitingMessageSent = false;
     if (notice !== 'none' && !(await this.d.attention.recentNoticeInChat(chat.id, settings.personalNoticeCooldownMinutes))) {
       if (!(await ctx.lease.stillHeld())) throw new PipelineRetryLater(CHAT_BUSY_RETRY_MS);
-      const text =
+      const busy = ctx.availability?.busy;
+      const [kind, template]: [NoticeKind, string] =
         notice === 'fallback'
-          ? settings.fallbackReplyText
-          : reason === 'PERSONAL' || reason === 'SENSITIVE'
-            ? settings.personalReplyText
-            : settings.ownerRequiredReplyText;
+          ? ['fallback', settings.fallbackReplyText]
+          : busy
+            ? ['busy', settings.busyReplyText] // the owner said they are busy: the most useful thing to tell
+            : ctx.availability?.offHours
+              ? ['offHours', settings.offHoursText]
+              : reason === 'PERSONAL' || reason === 'SENSITIVE'
+              ? ['personal', settings.personalReplyText]
+              : ['ownerRequired', settings.ownerRequiredReplyText];
+      const text = this.noticeText(ctx, kind, template);
       const outcome = await this.d.replies.sendOnce({
         sourceMessageId: last.id,
         chat,
@@ -621,6 +674,7 @@ export class ReplyPipeline {
       });
       waitingMessageSent = deliveryOf(outcome) === 'sent';
     }
+    const suggestions = opts.drafts ? await this.draftsFor(ctx, reason) : [];
     await this.d.attention.create({
       messageId: last.id,
       chatId: chat.id,
@@ -631,8 +685,95 @@ export class ReplyPipeline {
       waitingMessageSent,
       notify: settings.notifyOwnerAttention,
       burstMessageIds: ctx.burst.map((m) => m.id),
+      ...(suggestions.length > 0 ? { suggestions } : {}),
     });
     await this.setStatuses(ctx.burst, 'OWNER_ATTENTION', reason);
+  }
+
+  /** An owner-set notice (waiting / busy / off-hours) with placeholders filled, in the contact's language. */
+  private noticeText(ctx: BurstContext, kind: NoticeKind, template: string): string {
+    const owner = ctx.settings.ownerName;
+    const a = ctx.availability;
+    return localizeNotice(kind, template, owner, ctx.language ?? null, (t) =>
+      fillNotice(t, {
+        owner,
+        timezone: this.d.timezone,
+        ...(a?.busy ? { note: a.busy.note, until: a.busy.until } : {}),
+        start: a?.nextStart ?? ctx.settings.workStart,
+      }),
+    );
+  }
+
+  /** Ready replies for the owner's item (empty when disabled or the AI fails: never blocks the item). */
+  private async draftsFor(ctx: BurstContext, reason: string): Promise<string[]> {
+    if (!ctx.settings.replyDraftsEnabled || !DRAFT_REASONS.has(reason) || !ctx.text.trim()) return [];
+    try {
+      const history = await this.d.repo.recentHistory(ctx.chat.id, 6, ctx.burst[0]!.id);
+      return await generateDrafts(this.d.ai, {
+        settings: ctx.settings,
+        history: history.map((h) => ({ from: h.direction === 'INCOMING' ? 'contact' : 'owner', text: h.text })),
+        text: ctx.text,
+        language: ctx.language ?? null,
+        messageId: ctx.last.id,
+      });
+    } catch (error) {
+      log.warn({ error: describeError(error) }, 'reply drafts skipped');
+      return [];
+    }
+  }
+
+  /**
+   * Outside working hours (NOTICE / SILENT): one notice per chat per night (NOTICE), and the messages
+   * go to the owner's queue with a silent notification and reply drafts.
+   */
+  private async offHoursPath(ctx: BurstContext): Promise<void> {
+    const { chat, settings, last } = ctx;
+    let waitingMessageSent = false;
+    if (settings.offHoursMode === 'NOTICE' && !(await this.d.attention.recentStatusNoticeInChat(chat.id, OFF_HOURS_NOTICE_WINDOW_MINUTES))) {
+      if (!(await ctx.lease.stillHeld())) throw new PipelineRetryLater(CHAT_BUSY_RETRY_MS);
+      const outcome = await this.d.replies.sendOnce({
+        sourceMessageId: last.id,
+        chat,
+        kind: 'STATUS_NOTICE',
+        text: this.noticeText(ctx, 'offHours', settings.offHoursText),
+      });
+      waitingMessageSent = deliveryOf(outcome) === 'sent';
+    }
+    const suggestions = await this.draftsFor(ctx, 'OFF_HOURS');
+    await this.d.attention.create({
+      messageId: last.id,
+      chatId: chat.id,
+      reason: 'OFF_HOURS',
+      displayText: this.displayText(ctx),
+      userLabel: labelOf(ctx.sender, chat),
+      waitingMessageSent,
+      notify: settings.notifyOwnerAttention,
+      silent: true,
+      burstMessageIds: ctx.burst.map((m) => m.id),
+      ...(suggestions.length > 0 ? { suggestions } : {}),
+    });
+    await this.setStatuses(ctx.burst, 'OWNER_ATTENTION', 'outside working hours');
+  }
+
+  /** Tells the owner about a likely scam (at most once per chat per few hours). */
+  private async warnScam(ctx: BurstContext, reasons: string[]): Promise<void> {
+    if (!ctx.settings.scamWarnOwner) return;
+    const recent = await this.d.db.message.count({
+      where: {
+        chatId: ctx.chat.id,
+        id: { notIn: ctx.burst.map((m) => m.id) },
+        statusReason: { startsWith: 'scam' },
+        processedAt: { gte: new Date(Date.now() - SCAM_WARNING_WINDOW_MS) },
+      },
+    });
+    if (recent > 0) return;
+    await this.d.notifier.scamWarning({
+      userLabel: labelOf(ctx.sender, ctx.chat),
+      text: ctx.text,
+      reasons,
+      messageId: ctx.last.id,
+      senderTelegramUserId: ctx.sender?.telegramUserId ?? null,
+    });
   }
 
   /**

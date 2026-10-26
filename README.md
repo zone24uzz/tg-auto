@@ -92,6 +92,23 @@ Design decisions:
   daily AI cost cap, token & cost tracking per call.
 * Retention cleanup (messages, media, AI logs, temp files), privacy overview, per-user data deletion,
   AES-256-GCM encryption of message content at rest, audit log of every admin change, sanitized logs.
+* **✨ Assistant features** (admin menu → ✨ Yordamchi, or plain text to the assistant):
+  * *Style learning* — the owner's own messages (≥ 20) become a short style description the replies imitate
+    (manner only, no content); refreshed weekly or on "uslubimni o‘rgan".
+  * *Reply drafts* — personal / owner-only messages get 2–3 ready replies; one tap sends one as the owner.
+  * *Contact language* — replies and the built-in waiting texts follow the contact: Uzbek Latin / Cyrillic
+    (automatic transliteration), Russian, English.
+  * *Working hours* — e.g. 09:00–21:00 with days off; outside them: one notice per chat per night, AI as usual,
+    or silent; owner items arrive with a silent notification.
+  * *Busy mode* — "2 soat uchrashuvdaman": personal questions get "… hozir band (uchrashuvda), 16:30 dan keyin…",
+    and the AI may say so; ends by itself.
+  * *Scam protection* — login/SMS-code requests, card data, "guaranteed profit", phishing links: never answered,
+    no paid AI call, the owner is warned (with 🚫 Block).
+  * *Morning summary* (08:00) — calendar, waiting messages, today's reminders, birthdays, yesterday's numbers.
+  * *Birthdays* — from the owner's Telegram contacts (userbot) or "Alining tug‘ilgan kuni 12-mart";
+    a ready greeting (✅ sends it via the userbot).
+  * *Nightly backup* (administrator only) — settings, prompts, rules, contacts, 30 days of messages, tasks,
+    channels; gzip + encrypted with the server key; open with `npm run backup:restore -- <file> [--apply]`.
 
 ## 3. Telegram / API limitations (read this)
 

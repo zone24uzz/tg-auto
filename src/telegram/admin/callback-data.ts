@@ -27,6 +27,10 @@ export const ROUTES = {
   attentionIgnore: 'oa.ig',
   attentionManual: 'oa.mn',
   attentionOpen: 'oa.o',
+  /** Send one of the suggested replies: oa.s|<id>|<index> */
+  attentionDraft: 'oa.s',
+  /** Scam warning: block the sender: sc.b|<telegramUserId> */
+  scamBlock: 'sc.b',
   /** Message detail view */
   messageOpen: 'msg.o',
   /** Main menu */

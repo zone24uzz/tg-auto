@@ -20,6 +20,33 @@ export interface FieldDef {
  * callbacks — keeps callback_data far below Telegram's 64-byte limit.
  */
 export const FIELDS: Readonly<Record<string, FieldDef>> = {
+  // ✨ assistant features (style, drafts, working hours, busy mode, scam protection, daily routines)
+  xsp: { key: 'useStyleProfile', kind: 'bool', screen: 'fx', label: 'Uslubimdan foydalanish' },
+  xrd: { key: 'replyDraftsEnabled', kind: 'bool', screen: 'fx', label: 'Javob qoralamalari' },
+  xsc: { key: 'scamProtectionEnabled', kind: 'bool', screen: 'fx', label: 'Firibgarlikdan himoya' },
+  xsw: { key: 'scamWarnOwner', kind: 'bool', screen: 'fx', label: 'Firibgarlik haqida ogohlantirish' },
+  xms: { key: 'morningSummaryEnabled', kind: 'bool', screen: 'fx', label: 'Ertalabki xulosa' },
+  xmt: { key: 'morningSummaryTime', kind: 'text', screen: 'fx', label: 'Ertalabki xulosa vaqti', hint: 'HH:MM, masalan 08:00' },
+  xbd: { key: 'birthdayRemindersEnabled', kind: 'bool', screen: 'fx', label: 'Tug‘ilgan kun eslatmalari' },
+  xbk: { key: 'dailyBackupEnabled', kind: 'bool', screen: 'fx', label: 'Kunlik zaxira nusxa' },
+  xwe: { key: 'workHoursEnabled', kind: 'bool', screen: 'fx.w', label: 'Ish vaqti' },
+  xws: { key: 'workStart', kind: 'text', screen: 'fx.w', label: 'Ish boshlanishi', hint: 'HH:MM, masalan 09:00' },
+  xwn: { key: 'workEnd', kind: 'text', screen: 'fx.w', label: 'Ish tugashi', hint: 'HH:MM, masalan 21:00 (tungi smena uchun 02:00 ham bo‘ladi)' },
+  xom: { key: 'offHoursMode', kind: 'enum', screen: 'fx.w', label: 'Ish vaqtidan tashqari' },
+  xot: {
+    key: 'offHoursText',
+    kind: 'text',
+    screen: 'fx.w',
+    label: 'Ish vaqtidan tashqari xabar',
+    hint: '{owner} — ismingiz, {start} — ish boshlanish vaqti.',
+  },
+  xbt: {
+    key: 'busyReplyText',
+    kind: 'text',
+    screen: 'fx.b',
+    label: '«Bandman» xabari',
+    hint: '{owner} — ismingiz, {note} — sabab (uchrashuvda…), {until} — qachongacha.',
+  },
   // auto reply
   ae: { key: 'autoReplyEnabled', kind: 'bool', screen: 'ar', label: 'Avtojavob' },
   lw: { key: 'logWhenDisabled', kind: 'bool', screen: 'ar', label: 'O‘chiq paytda saqlash' },

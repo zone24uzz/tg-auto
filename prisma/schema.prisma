@@ -111,6 +111,7 @@ enum ResponseKind {
   OWNER_APPROVED_AI
   OWNER_MANUAL
   LIMIT_NOTICE
+  STATUS_NOTICE
   MEDIA_NOTICE
 }
 
@@ -234,24 +235,30 @@ model TelegramConnection {
 // ───────────────────────────── people / chats ─────────────────────────────
 
 model TelegramUser {
-  id             Int       @id @default(autoincrement())
-  tenantId       Int       @default(0)
-  telegramUserId BigInt
-  username       String?
-  firstName      String?
-  lastName       String?
-  languageCode   String?
-  isBot          Boolean   @default(false)
+  id                   Int       @id @default(autoincrement())
+  tenantId             Int       @default(0)
+  telegramUserId       BigInt
+  username             String?
+  firstName            String?
+  lastName             String?
+  languageCode         String?
+  isBot                Boolean   @default(false)
   /// MTProto access_hash (userbot mode) so replies work after restarts without an entity cache.
-  accessHash     String?
-  isContact      Boolean   @default(false)
-  tags           String[]  @default([])
-  notes          String?
-  messageCount   Int       @default(0)
-  firstSeenAt    DateTime  @default(now())
-  lastMessageAt  DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  accessHash           String?
+  isContact            Boolean   @default(false)
+  tags                 String[]  @default([])
+  notes                String?
+  /// MM-DD or YYYY-MM-DD (from Telegram or told by the owner).
+  birthday             String?
+  /// "telegram" | "owner"
+  birthdaySource       String?
+  /// Year of the last birthday notification (one per year).
+  birthdayNotifiedYear Int?
+  messageCount         Int       @default(0)
+  firstSeenAt          DateTime  @default(now())
+  lastMessageAt        DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   messages Message[]
   chats    Chat[]
@@ -259,6 +266,7 @@ model TelegramUser {
   @@unique([tenantId, telegramUserId])
   @@index([tenantId, username])
   @@index([tenantId, lastMessageAt])
+  @@index([tenantId, birthday])
   @@map("users")
 }
 
@@ -507,6 +515,8 @@ model OwnerAttention {
   detail                     String?
   status                     AttentionStatus @default(PENDING)
   adminNotificationMessageId Int?
+  /// Suggested replies for the owner (encrypted JSON array).
+  suggestions                String?
   createdAt                  DateTime        @default(now())
   resolvedAt                 DateTime?
 
