@@ -68,7 +68,7 @@ const INTENT_SCHEMA = {
     end_at: { type: 'string', description: 'calendar_list: range end; calendar_add: event end (empty = 1 hour). Absolute ISO 8601 with offset' },
     needs_search: {
       type: 'boolean',
-      description: 'chat / channel_post: true when the answer or post needs current information from the internet (news, “latest”, prices, exchange rates, weather, sports, recent events)',
+      description: 'chat / channel_post: true ONLY when the answer or post needs current information from the internet (news, “latest”, “bugungi”, prices, exchange rates, weather, sports results, recent events). A post about a general topic, tips or the owner’s own services = false',
     },
   },
   required: ['action', 'person', 'repeat', 'remind_at', 'text', 'task_id', 'reply', 'needs_search', 'channel', 'exact', 'start_at', 'end_at'],
@@ -99,7 +99,7 @@ function systemPrompt(now: Date, timezone: string): string {
     'Actions:',
     '- watch_online: tell the owner when a person comes online on Telegram ("X online bo\'lsa / tg ga kirganda / kirsa menga xabar ber", "X kirganda ayt").',
     '- watch_message: tell the owner immediately when a person writes ("X yozsa darhol ayt", "X dan xabar kelsa bildir").',
-    `- remind: remind the owner at a time ("soat 18:00 da ... eslat", "2 soatdan keyin ..."). remind_at = absolute ISO 8601 with offset ${offset}; text = what to remind.`,
+    `- remind: remind the owner at a time, including timers ("soat 18:00 da ... eslat", "2 soatdan keyin ...", "10 minutga timer qo‘y", "budilnik 7:00"). remind_at = absolute ISO 8601 with offset ${offset}; text = what to remind.`,
     '- send_message: send a message to a person on the owner\'s behalf ("X ga yoz: ...", "X ga ayt ..."). text = the message exactly as it should be sent, in the language the owner used, without quotes.',
     '- list_tasks: show the active tasks ("vazifalar", "kuzatuvlar", "nima kuzatyapsan").',
     '- cancel_task: stop a task ("X kuzatuvini o\'chir" → person; "3-vazifani o\'chir" → task_id).',

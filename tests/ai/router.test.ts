@@ -79,7 +79,8 @@ describe('DefaultAiRouter text chain', () => {
     gemini.generateText.mockRejectedValue(new AIProviderError('boom', 'gemini', 'SERVER'));
     const { router } = setup([gemini], { fallbackProvider: 'gemini', fallbackModel: 'gemini-3.8-flash' });
     await expect(router.generateReply(msg)).rejects.toBeInstanceOf(AllProvidersFailedError);
-    expect(gemini.generateText).toHaveBeenCalledTimes(1);
+    // The duplicated model is tried once; then only the built-in Gemini last resort.
+    expect(gemini.generateText.mock.calls.map((c) => (c[0] as { model: string }).model)).toEqual(['gemini-3.8-flash', 'gemini-3.5-flash-lite']);
   });
 
   it('throws AllProvidersFailedError with sanitized attempts when everything fails', async () => {
@@ -93,7 +94,7 @@ describe('DefaultAiRouter text chain', () => {
     expect(err).toBeInstanceOf(AllProvidersFailedError);
     const failed = err as AllProvidersFailedError;
     expect(failed.operation).toBe('TEXT');
-    expect(failed.attempts.map((a) => `${a.provider}/${a.model}`)).toEqual(['gemini/gemini-3.8-flash', 'openai/gpt-5-mini']);
+    expect(failed.attempts.map((a) => `${a.provider}/${a.model}`)).toEqual(['gemini/gemini-3.8-flash', 'openai/gpt-5-mini', 'gemini/gemini-3.5-flash-lite']);
     expect(failed.attempts[0]?.error).not.toContain('AIzaSyLEAKEDKEY');
     expect(entries.every((e) => !e.success)).toBe(true);
   });

@@ -2,10 +2,11 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AiRouter } from '../../src/ai/router/types.js';
 import type { UserbotAssistantApi } from '../../src/app/userbot-contract.js';
 import { OwnerAssistant } from '../../src/assistant/assistant.service.js';
-import { BackupService, readBackup } from '../../src/features/backup.service.js';
+import { BackupNotEncryptedError, BackupService, readBackup } from '../../src/features/backup.service.js';
 import { DailyService } from '../../src/features/daily.service.js';
 import { StyleService } from '../../src/features/style.service.js';
 import { PgQueue } from '../../src/queues/pg-queue.js';
+import { ContentCipher } from '../../src/security/crypto.js';
 import { cb } from '../../src/telegram/admin/callback-data.js';
 import { tzOffsetMs } from '../../src/utils/time.js';
 import { businessMessage, buildHarness, OWNER_ID } from '../support/harness.js';
@@ -301,6 +302,22 @@ d('daily routines (real PostgreSQL)', () => {
     expect(opened.counts.users).toBe(1);
     expect(opened.counts.messages).toBe(1);
     expect(opened.data.settings!.some((r) => r.key === 'backupDoneOn')).toBe(true);
+  });
+
+  it('without DATA_ENCRYPTION_KEY no backup is ever created or sent', async () => {
+    const plain = new ContentCipher(undefined);
+    const backup = new BackupService({ db: h.db, cipher: plain, timezone: TZ });
+    expect(backup.possible).toBe(false);
+    await expect(backup.create()).rejects.toBeInstanceOf(BackupNotEncryptedError);
+    const ai = h.ai as unknown as AiRouter;
+    const d2 = new DailyService({
+      db: h.db, ai, cipher: h.cipher, settings: h.settings, notifier: h.notifier as never, attention: h.attention, backup,
+      style: new StyleService({ db: h.db, ai, cipher: h.cipher, settings: h.settings }),
+      userbot: () => null, button: (...args) => cb('as', ...args), timezone: TZ, now: () => now,
+    });
+    expect(await d2.sendBackup()).toContain('DATA_ENCRYPTION_KEY');
+    await d2.tick();
+    expect(h.notifier.document).not.toHaveBeenCalled();
   });
 
   it('style learning: needs 20 own messages, then saves a profile used by replies', async () => {

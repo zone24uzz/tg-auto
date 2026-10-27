@@ -19,7 +19,9 @@ import { formatBirthday, normalizeBirthday } from '../features/daily.service.js'
 import { fillNotice } from '../features/availability.js';
 import type { StyleService } from '../features/style.service.js';
 import type { SettingsService } from '../settings/settings.service.js';
+import { isRateLimitFailure } from '../classifiers/ai-errors.js';
 import { parseOwnerIntent, type OwnerIntent } from './intent.js';
+import { parseQuickCommand } from './quick.js';
 import { PersonResolver, type PersonCandidate } from './resolver.js';
 
 const log = childLogger('assistant');
@@ -150,12 +152,15 @@ export class OwnerAssistant implements AssistantPort {
       return this.d.channels.revise(revision.postId, text);
     }
     onStatus('thinking');
-    let intent: OwnerIntent;
-    try {
-      intent = await parseOwnerIntent(this.d.ai, text, this.now(), this.d.timezone);
-    } catch (error) {
-      log.warn({ error: describeError(error) }, 'could not parse the owner command');
-      return { text: '🤔 Buyruqni tushuna olmadim (yoki AI hozir band). Boshqacharoq yozib ko‘ring.\n\n' + HELP };
+    // Timers and greetings need no AI (instant, and they work when the AI quota is used up).
+    let intent: OwnerIntent | null = parseQuickCommand(text, this.now());
+    if (!intent) {
+      try {
+        intent = await parseOwnerIntent(this.d.ai, text, this.now(), this.d.timezone);
+      } catch (error) {
+        log.warn({ error: describeError(error) }, 'could not parse the owner command');
+        return { text: aiDownText(error) };
+      }
     }
     switch (intent.action) {
       case 'list_tasks':
@@ -221,11 +226,6 @@ export class OwnerAssistant implements AssistantPort {
   ): Promise<AssistantReply> {
     const channels = this.d.channels;
     if (!channels) return { text: '📢 Kanallar bu yerda yoqilmagan.' };
-    // A post about news needs real, current facts: never let the model invent them.
-    if (needsSearch && !exact && !this.canSearch())
-      return {
-        text: '📰 Haqiqiy yangiliklarni topish uchun Google qidiruvi kerak, u esa hozir ishlamayapti (Gemini kalitida billing yoqilmagan). Yangilik to‘qib chiqarmayman.\n\nBuning o‘rniga: mavzu yoki yangilik matnini o‘zingiz bering (<i>kanalga post yoz: … haqida, mana ma’lumot: …</i>) yoki <i>kanalga joyla: …</i> deb tayyor matn yuboring.',
-      };
     const { channel, choices } = await channels.resolve(channelQuery);
     if (!channel) {
       if (choices.length === 0) return { text: channels.howToConnect() };
@@ -235,13 +235,27 @@ export class OwnerAssistant implements AssistantPort {
         buttons: [...choices.map((c) => [{ label: c.title.slice(0, 40), data: cb(ASSISTANT_ROUTE, 'cp', 'pick', c.id) }]), [{ label: '❌ Bekor', data: cb(ASSISTANT_ROUTE, 'cp', 'drop', 0) }]],
       };
     }
-    if (!exact) onStatus(needsSearch ? 'searching' : 'writing');
+    const search = needsSearch && !exact && this.canSearch();
+    if (!exact) onStatus(search ? 'searching' : 'writing');
+    if (search) {
+      try {
+        return await channels.draft(channel, instructions, exact, { webSearch: true });
+      } catch (error) {
+        // Usually a free Gemini key without search quota: write the post without search instead.
+        this.searchBlockedUntil = Date.now() + 6 * 3_600_000;
+        log.warn({ error: describeError(error) }, 'channel draft with web search failed; writing without search');
+        onStatus('writing');
+      }
+    }
     try {
-      return await channels.draft(channel, instructions, exact, { webSearch: needsSearch && !exact });
+      const reply = await channels.draft(channel, instructions, exact, { offline: needsSearch && !exact });
+      if (needsSearch && !exact)
+        reply.text +=
+          '\n\n⚠️ <i>Google qidiruvi hozir ishlamadi (Gemini kalitida billing yo‘q), shuning uchun post umumiy bilim asosida yozildi — so‘nggi yangilik, sana va raqamlarni joylashdan oldin tekshiring.</i>';
+      return reply;
     } catch (error) {
-      if (needsSearch) this.searchBlockedUntil = Date.now() + 6 * 3_600_000;
       log.warn({ error: describeError(error) }, 'channel draft failed');
-      return { text: '❌ AI hozir javob bermadi (Google tomonida sekinlik). Birozdan keyin qaytadan yozing.' };
+      return { text: '❌ AI hozir javob bermadi (Gemini limiti yoki sekinlik). Birozdan keyin qaytadan yozing yoki 📜 /logs ni ko‘ring.' };
     }
   }
 
@@ -701,6 +715,14 @@ export class OwnerAssistant implements AssistantPort {
     const states = await api.presence(ids.map((id) => ({ id, accessHash: hash.get(id) ?? null })));
     for (const [id, state] of states) await this.onPresence(id, state);
   }
+}
+
+/** Why the assistant could not answer: say so plainly instead of pretending the command was unclear. */
+function aiDownText(error: unknown): string {
+  const tip = 'Shu paytda ham ishlaydi: <i>10 minutdan keyin eslat</i>, <i>vazifalarim</i>, /menu.';
+  if (isRateLimitFailure(error))
+    return `⏳ <b>AI limiti tugadi.</b> Bepul Gemini kalitida har modelga kuniga ~20 ta so‘rov bor; limit Tinch okeani vaqti bilan yarim tunda (Toshkentda taxminan 12:00–13:00) yangilanadi. Doimiy ishlashi uchun kalitda billing yoqing.\n\n${tip}`;
+  return `⚠️ <b>AI hozir javob bermadi</b> (Google tomonida sekinlik yoki band). Birozdan keyin qayta yozing; sababini /logs da ko‘rasiz.\n\n${tip}`;
 }
 
 function labelOf(u: { username: string | null; firstName: string | null; lastName: string | null; telegramUserId: bigint }): string {

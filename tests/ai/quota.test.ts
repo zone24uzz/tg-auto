@@ -81,7 +81,8 @@ describe('quota exhaustion (router)', () => {
     let calls = 0;
     gemini.generateText.mockImplementation(async (req) => {
       calls++;
-      if (calls === 1) throw new AIProviderError('429', 'gemini', 'RATE_LIMIT', { status: 429, cooldownMs: 3_600_000 });
+      // The configured model and the built-in last resort are both rate-limited the first time.
+      if (calls <= 2) throw new AIProviderError('429', 'gemini', 'RATE_LIMIT', { status: 429, cooldownMs: 3_600_000 });
       return { text: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, provider: 'gemini', model: req.model, latencyMs: 1 };
     });
     const settings = baseSettings();
@@ -94,7 +95,7 @@ describe('quota exhaustion (router)', () => {
     });
     const msg = { messages: [{ role: 'user' as const, parts: [{ type: 'text' as const, text: 'salom' }] }] };
     await expect(router.generateReply(msg)).rejects.toThrow();
-    // The only target is cooling down: it is still tried (and now succeeds).
+    // Every target is cooling down: they are still tried (and the first now succeeds).
     await expect(router.generateReply(msg)).resolves.toMatchObject({ model: 'gemini-3.8-flash', usedFallback: false });
   });
 });

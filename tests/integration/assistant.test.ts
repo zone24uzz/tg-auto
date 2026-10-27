@@ -228,7 +228,20 @@ d('owner assistant (real PostgreSQL)', () => {
     say(intent({ action: 'watch_message', person: 'Zarina' }));
     expect((await assistant.handleText('Zarina yozsa ayt')).text).toContain('topa olmadim');
     ai.raw.classify.mockRejectedValueOnce(new Error('down'));
-    expect((await assistant.handleText('nimadir')).text).toContain('tushuna olmadim');
+    expect((await assistant.handleText('nimadir')).text).toContain('AI hozir javob bermadi');
+    // A used-up quota is named as such (not "I didn't understand").
+    ai.raw.classify.mockRejectedValueOnce(new Error('gemini HTTP 429: RESOURCE_EXHAUSTED quota'));
+    expect((await assistant.handleText('nimadir')).text).toContain('AI limiti tugadi');
+  });
+
+  it('timers and greetings work without the AI (e.g. quota used up)', async () => {
+    const timer = await assistant.handleText('qara 10 minutga timer qoyib ber');
+    expect(timer.text).toContain('eslataman');
+    const task = await tdb.db.assistantTask.findFirstOrThrow({ where: { kind: 'REMINDER' } });
+    expect(task.runAt!.getTime() - now.getTime()).toBe(10 * 60_000);
+    expect(await tdb.db.job.count({ where: { type: 'assistant.remind' } })).toBe(1);
+    expect((await assistant.handleText('hello')).text).toContain('Salom');
+    expect(ai.raw.classify).not.toHaveBeenCalled();
   });
 });
 

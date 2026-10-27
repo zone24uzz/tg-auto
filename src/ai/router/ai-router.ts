@@ -37,6 +37,12 @@ const log = childLogger('ai-router');
 const MAX_COOLDOWN_MS = 12 * 3_600_000;
 /** How long a model that timed out is skipped. */
 const TIMEOUT_COOLDOWN_MS = 5 * 60_000;
+/**
+ * Last resort for Gemini setups: free keys get only ~20 requests per model per day and the bigger
+ * models are sometimes overloaded (503), while flash-lite has its own quota. Tried after the
+ * configured models, never instead of them.
+ */
+export const GEMINI_LAST_RESORT_MODEL = 'gemini-3.5-flash-lite';
 
 export interface AiRouterDeps {
   registry: Pick<ProviderRegistry, 'get' | 'configured' | 'defaultTranscriptionModel' | 'defaultTtsModel'>;
@@ -238,9 +244,12 @@ export class DefaultAiRouter implements AiRouter {
   }
 
   private replyTargets(s: Settings): Array<Target | undefined> {
+    const fallbackProvider = s.fallbackProvider ?? (s.fallbackModel ? s.aiProvider : null);
+    const usesGemini = s.aiProvider === 'gemini' || fallbackProvider === 'gemini';
     return [
       this.target(s.aiProvider, s.aiModel),
-      this.target(s.fallbackProvider ?? (s.fallbackModel ? s.aiProvider : null), s.fallbackModel),
+      this.target(fallbackProvider, s.fallbackModel),
+      usesGemini ? this.target('gemini', GEMINI_LAST_RESORT_MODEL) : undefined,
     ];
   }
 

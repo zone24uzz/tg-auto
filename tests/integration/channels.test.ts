@@ -122,7 +122,7 @@ d('channel posts (real PostgreSQL)', () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('a news post needs web search: with search the draft is grounded, without it nothing is invented', async () => {
+  it('a news post uses web search: grounded with sources; without search it is still written, evergreen and with a warning', async () => {
     await channels.onMembership(membership('administrator'));
     say({ action: 'channel_post', text: 'AI haqida yangilik', needs_search: true });
     ai.raw.generateReply.mockResolvedValueOnce({
@@ -135,14 +135,26 @@ d('channel posts (real PostgreSQL)', () => {
     expect(ai.raw.generateReply).toHaveBeenCalledWith(expect.objectContaining({ webSearch: true }));
     expect(draft.text).toContain('Manbalar (postga qo‘shilmaydi)');
 
-    // Search refused (no quota): the next news request is declined instead of inventing news.
+    // Search refused (free key, no search quota): the same request is written without search.
     say({ action: 'channel_post', text: 'yana yangilik', needs_search: true });
     ai.raw.generateReply.mockRejectedValueOnce(new Error('gemini HTTP 429: quota'));
-    expect((await assistant.handleText('Kanalga post yoz: yana yangilik')).text).toContain('AI hozir javob bermadi');
+    nextPost('🤖 AI bizga nima beradi: …');
+    const offline = await assistant.handleText('Kanalga post yoz: yana yangilik');
+    expect(offline.text).toContain('Post loyihasi');
+    expect(offline.text).toContain('Google qidiruvi hozir ishlamadi');
+    const lastReq = ai.raw.generateReply.mock.calls.at(-1)![0] as { system: string; webSearch?: boolean };
+    expect(lastReq.webSearch).toBeUndefined();
+    expect(lastReq.system).toContain('no internet access');
+    expect(ai.raw.generateReply).toHaveBeenCalledTimes(3);
+
+    // While search is paused, a news request goes straight to the offline writer (one call).
     say({ action: 'channel_post', text: 'yana yangilik', needs_search: true });
-    const declined = await assistant.handleText('Kanalga post yoz: yana yangilik');
-    expect(declined.text).toContain('Yangilik to‘qib chiqarmayman');
-    expect(ai.raw.generateReply).toHaveBeenCalledTimes(2);
+    nextPost('🤖 Yana post');
+    const statuses2: string[] = [];
+    const again = await assistant.handleText('Kanalga post yoz: yana yangilik', (st) => statuses2.push(st));
+    expect(again.text).toContain('Post loyihasi');
+    expect(statuses2).toEqual(['thinking', 'writing']);
+    expect(ai.raw.generateReply).toHaveBeenCalledTimes(4);
   });
 
   it('several channels: the owner picks one', async () => {

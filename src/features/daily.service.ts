@@ -401,7 +401,7 @@ export class DailyService {
 
   private async backupIfDue(): Promise<void> {
     const s = await this.d.settings.get();
-    if (!s.dailyBackupEnabled || !this.backupAvailable()) return;
+    if (!s.dailyBackupEnabled || !this.backupAvailable() || !this.d.backup.possible) return;
     const now = this.now();
     if (this.localMinutes(now) < BACKUP_HOUR * 60) return;
     const today = localDateKey(now, this.d.timezone);
@@ -412,12 +412,13 @@ export class DailyService {
   /** Creates the backup and sends it to the owner's chat; returns a status line. */
   async sendBackup(silent = false): Promise<string> {
     if (!this.backupAvailable()) return '💾 Zaxira nusxa faqat bot administratori uchun (u server kaliti bilan shifrlanadi).';
+    if (!this.d.backup.possible) return '🔐 Zaxira nusxa yaratilmadi: serverda DATA_ENCRYPTION_KEY yo‘q (shifrlanmagan zaxira hech qachon yuborilmaydi).';
     const backup = await this.d.backup.create();
     const total = Object.values(backup.counts).reduce((a, b) => a + b, 0);
     const caption = [
       `💾 <b>Zaxira nusxa</b> — ${formatDateTime(this.now(), this.d.timezone)}`,
       `Kontaktlar: ${backup.counts.users ?? 0} · xabarlar (30 kun): ${backup.counts.messages ?? 0} · qoidalar: ${backup.counts.rules ?? 0}`,
-      backup.encrypted ? '🔐 Shifrlangan: faqat shu server kaliti bilan ochiladi.' : '⚠️ Shifrlanmagan (DATA_ENCRYPTION_KEY yo‘q).',
+      '🔐 Shifrlangan: faqat shu server kaliti bilan ochiladi.',
     ].join('\n');
     const ok = await this.d.notifier.document(backup.file, backup.filename, caption, { silent });
     return ok ? `💾 Zaxira nusxa yuborildi (${total} ta yozuv).` : '❌ Zaxira faylini yuborib bo‘lmadi (📜 Logs).';

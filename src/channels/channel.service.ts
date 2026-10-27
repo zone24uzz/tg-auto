@@ -113,10 +113,14 @@ export class ChannelService {
   }
 
   /** Writes a draft for the channel (or keeps the owner's exact text) and shows it with the buttons. */
-  async draft(channel: Channel, instructions: string, exact: boolean, opts: { webSearch?: boolean } = {}): Promise<ChannelReply> {
+  /**
+   * `webSearch`: ground the post in Google Search results. `offline`: the post wanted current facts but
+   * search is unavailable — the writer is told not to state recent events, dates or numbers as facts.
+   */
+  async draft(channel: Channel, instructions: string, exact: boolean, opts: { webSearch?: boolean; offline?: boolean } = {}): Promise<ChannelReply> {
     let text = instructions.slice(0, MAX_POST);
     let sources: Array<{ url: string; title?: string }> = [];
-    if (!exact) ({ text, sources } = await this.write(channel, instructions, undefined, opts.webSearch === true));
+    if (!exact) ({ text, sources } = await this.write(channel, instructions, undefined, opts.webSearch === true, opts.offline === true));
     const post = await this.d.db.channelPost.create({
       data: { channelId: channel.id, instructions: this.d.cipher.encrypt(instructions), text: this.d.cipher.encrypt(text) },
     });
@@ -134,6 +138,7 @@ export class ChannelService {
     instructions: string,
     previous?: string,
     webSearch = false,
+    offline = false,
   ): Promise<{ text: string; sources: Array<{ url: string; title?: string }> }> {
     const routed = await this.d.ai.generateReply({
       system: [
@@ -141,8 +146,13 @@ export class ChannelService {
         'Follow the owner’s instructions exactly. Write an engaging, well-structured post: a strong first line, short paragraphs, a few relevant emojis, an optional call to action.',
         'Plain text only (no markdown symbols like *, _, #). About 400–1200 characters unless the owner asks otherwise. Write in the language of the instructions.',
         'Use only facts you are sure about; with web search, base news on the search results and never invent events, numbers or dates.',
+        offline
+          ? 'You have no internet access right now: write an evergreen post on the topic (explanations, tips, ideas) and do not present specific recent events, dates, prices or statistics as facts.'
+          : '',
         'Return only the post text.',
-      ].join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n'),
       messages: [
         {
           role: 'user',
